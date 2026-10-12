@@ -8,6 +8,7 @@ export type OracleTick = {
   oracle_price_raw?: number;
   round?: number;
   block_num?: number;
+  ts_ms?: number;
 };
 
 function defaultIndexerWsUrl(): string {

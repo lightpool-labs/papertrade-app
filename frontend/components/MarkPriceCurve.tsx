@@ -7,6 +7,8 @@ type Point = { t: number; p: number };
 
 type Props = {
   mark: number | null;
+  /** Indexed mark ticks to paint before live WS catches up. */
+  seed?: Point[] | null;
   /** Visible time window in ms (default 30s). */
   windowMs?: number;
 };
@@ -25,7 +27,7 @@ const SAMPLE_MS = 80;
  * History is kept forever. Left-drag pans; after release the window keeps
  * scrolling right→left at normal wall-clock speed (optional delay via pan).
  */
-export function MarkPriceCurve({ mark, windowMs = 30_000 }: Props) {
+export function MarkPriceCurve({ mark, seed = null, windowMs = 30_000 }: Props) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pointsRef = useRef<Point[]>([]);
@@ -36,6 +38,26 @@ export function MarkPriceCurve({ mark, windowMs = 30_000 }: Props) {
   const panBackMsRef = useRef(0);
   const draggingRef = useRef(false);
   const lastDragXRef = useRef(0);
+  const seedKeyRef = useRef("");
+
+  useEffect(() => {
+    if (!seed?.length) return;
+    const key = `${seed[0].t}:${seed[seed.length - 1].t}:${seed.length}`;
+    if (seedKeyRef.current === key) return;
+    seedKeyRef.current = key;
+
+    const lastSeedT = seed[seed.length - 1].t;
+    const liveTail = pointsRef.current.filter((p) => p.t > lastSeedT);
+    pointsRef.current = [...seed, ...liveTail];
+    const tip = pointsRef.current[pointsRef.current.length - 1];
+    if (displayRef.current == null && tip) {
+      displayRef.current = tip.p;
+      targetRef.current = tip.p;
+    }
+    if (sessionOpenRef.current == null) {
+      sessionOpenRef.current = seed[0].p;
+    }
+  }, [seed]);
 
   useEffect(() => {
     if (mark == null || !Number.isFinite(mark) || mark <= 0) return;
@@ -43,8 +65,10 @@ export function MarkPriceCurve({ mark, windowMs = 30_000 }: Props) {
     targetRef.current = mark;
     if (displayRef.current == null) {
       displayRef.current = mark;
-      sessionOpenRef.current = mark;
-      pointsRef.current = [{ t: now, p: mark }];
+      if (sessionOpenRef.current == null) sessionOpenRef.current = mark;
+      if (pointsRef.current.length === 0) {
+        pointsRef.current = [{ t: now, p: mark }];
+      }
       panBackMsRef.current = 0;
       return;
     }
@@ -343,14 +367,15 @@ export function MarkPriceCurve({ mark, windowMs = 30_000 }: Props) {
   }, [windowMs]);
 
   useEffect(() => {
-    if (mark == null) {
+    if (mark == null && !seed?.length) {
       pointsRef.current = [];
       displayRef.current = null;
       targetRef.current = null;
       sessionOpenRef.current = null;
       panBackMsRef.current = 0;
+      seedKeyRef.current = "";
     }
-  }, [mark]);
+  }, [mark, seed]);
 
   return (
     <div ref={wrapRef} className="mark-curve">

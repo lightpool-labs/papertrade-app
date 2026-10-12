@@ -66,6 +66,37 @@ export async function getMark(slug: string): Promise<MarkResponse> {
   return res.json();
 }
 
+export type MarkHistoryTick = {
+  t: number;
+  mark_price: string;
+  oracle_price: string;
+  mark_price_raw: number;
+  oracle_price_raw: number;
+  round: number;
+  block_num: number;
+};
+
+export type MarkHistoryResponse = {
+  spot_market: string;
+  ticks: MarkHistoryTick[];
+};
+
+/** Indexed oracle/mark ticks (seed for tick chart). */
+export async function getMarkHistory(
+  slug: string,
+  opts?: { fromMs?: number; limit?: number },
+): Promise<MarkHistoryResponse> {
+  const q = new URLSearchParams();
+  if (opts?.fromMs != null) q.set("from_ms", String(opts.fromMs));
+  if (opts?.limit != null) q.set("limit", String(opts.limit));
+  const qs = q.toString();
+  const res = await fetch(
+    `${API_URL}/markets/${encodeURIComponent(slug)}/mark/history${qs ? `?${qs}` : ""}`,
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
 export type PaperAccount = {
   market: string;
   address: string;

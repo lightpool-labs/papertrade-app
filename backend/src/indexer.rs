@@ -23,7 +23,26 @@ pub struct IndexerOracleMark {
     pub oracle_price_raw: u64,
     pub mark_price_raw: u64,
     pub block_num: u64,
+    #[serde(default)]
+    pub ts_ms: u64,
     pub source: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IndexerOracleHistoryTick {
+    pub t: u64,
+    pub mark_price: String,
+    pub oracle_price: String,
+    pub mark_price_raw: u64,
+    pub oracle_price_raw: u64,
+    pub round: u64,
+    pub block_num: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IndexerOracleHistory {
+    pub spot_market: String,
+    pub ticks: Vec<IndexerOracleHistoryTick>,
 }
 
 fn urlencoding_encode(raw: &str) -> String {
@@ -110,6 +129,52 @@ impl IndexerClient {
             .json()
             .await
             .map_err(|e| AppError::Internal(format!("decode oracle mark: {e}")))
+    }
+
+    /// Recent indexed oracle/mark ticks for tick-chart seed.
+    pub async fn get_oracle_mark_history(
+        &self,
+        spot_market: &str,
+        from_ms: Option<u64>,
+        limit: Option<usize>,
+    ) -> AppResult<IndexerOracleHistory> {
+        let mut url = format!(
+            "{}/api/spot/{}/oracle/history?",
+            self.base_url,
+            urlencoding_encode(spot_market)
+        );
+        let mut first = true;
+        if let Some(from_ms) = from_ms {
+            url.push_str(&format!("from_ms={from_ms}"));
+            first = false;
+        }
+        if let Some(limit) = limit {
+            if !first {
+                url.push('&');
+            }
+            url.push_str(&format!("limit={limit}"));
+        }
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("indexer oracle history failed: {e}")))?;
+        let status = response.status();
+        if !status.is_success() {
+            let message = match response.json::<ErrorBody>().await {
+                Ok(body) => body.error,
+                Err(_) => format!("indexer oracle history HTTP {status}"),
+            };
+            if status.as_u16() == 404 {
+                return Err(AppError::NotFound(message));
+            }
+            return Err(AppError::Internal(message));
+        }
+        response
+            .json()
+            .await
+            .map_err(|e| AppError::Internal(format!("decode oracle history: {e}")))
     }
 
     pub async fn get_paper_account(

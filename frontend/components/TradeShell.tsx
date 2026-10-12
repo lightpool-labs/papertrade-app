@@ -11,6 +11,7 @@ import { PositionsPanel } from "@/components/PositionsPanel";
 import { WalletProvider, useWallet } from "@/components/WalletProvider";
 import {
   getAccount,
+  getMarkHistory,
   listHistory,
   listMarkets,
   listPositions,
@@ -36,6 +37,9 @@ function TradeBody() {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [selected, setSelected] = useState<Market | null>(null);
   const [mark, setMark] = useState<number | null>(null);
+  const [markSeed, setMarkSeed] = useState<{ t: number; p: number }[] | null>(
+    null,
+  );
   const [changePct, setChangePct] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [chartView, setChartView] = useState<ChartView>("tick");
@@ -62,13 +66,13 @@ function TradeBody() {
   }, [slug]);
 
   const refreshAccountAndPositions = useCallback(
-    async (opts?: { silent?: boolean }) => {
+    async (opts?: { silent?: boolean; opens?: boolean }) => {
       const silent = opts?.silent === true;
+      const refreshOpens = opts?.opens !== false;
       if (!silent) setPosLoading(true);
       setPosError(null);
       const market = selected?.paper_market?.trim() || undefined;
 
-      // Fetch independently — account get_acct 404 must not blank the positions table.
       if (market) {
         try {
           setAccount(await getAccount(address, market));
@@ -80,12 +84,17 @@ function TradeBody() {
       }
 
       try {
-        const [pos, hist] = await Promise.all([
-          listPositions(address, { market, status: "open" }),
-          listHistory(address, market),
-        ]);
-        setOpenPositions(pos.open ?? []);
-        setHistory(hist.history ?? []);
+        if (refreshOpens) {
+          const [pos, hist] = await Promise.all([
+            listPositions(address, { market, status: "open" }),
+            listHistory(address, market),
+          ]);
+          setOpenPositions(pos.open ?? []);
+          setHistory(hist.history ?? []);
+        } else {
+          const hist = await listHistory(address, market);
+          setHistory(hist.history ?? []);
+        }
       } catch (err) {
         setPosError(
           err instanceof Error ? err.message : "Failed to load positions",
@@ -97,20 +106,23 @@ function TradeBody() {
     [address, selected?.paper_market],
   );
 
+  const removeOpenPosition = useCallback((market: string, position: number) => {
+    setOpenPositions((prev) =>
+      prev.filter((p) => !(p.market === market && p.position === position)),
+    );
+  }, []);
+
   const onOpened = useCallback(() => {
-    void refreshAccountAndPositions({ silent: true });
+    void refreshAccountAndPositions({ silent: true, opens: true });
   }, [refreshAccountAndPositions]);
 
   const onClosed = useCallback(
     (row: PaperPositionOpen) => {
-      setOpenPositions((prev) =>
-        prev.filter(
-          (p) => !(p.market === row.market && p.position === row.position),
-        ),
-      );
-      void refreshAccountAndPositions({ silent: true });
+      removeOpenPosition(row.market, row.position);
+      // Account + history only — do not replace the open table (avoids row flash).
+      void refreshAccountAndPositions({ silent: true, opens: false });
     },
-    [refreshAccountAndPositions],
+    [refreshAccountAndPositions, removeOpenPosition],
   );
 
   useEffect(() => {
@@ -119,9 +131,8 @@ function TradeBody() {
 
   useEffect(() => {
     void refreshAccountAndPositions();
-    // Slow fallback if WS drops; primary refresh is paper.user below.
     const timer = window.setInterval(() => {
-      void refreshAccountAndPositions({ silent: true });
+      void refreshAccountAndPositions({ silent: true, opens: true });
     }, 30_000);
     return () => window.clearInterval(timer);
   }, [refreshAccountAndPositions]);
@@ -130,10 +141,23 @@ function TradeBody() {
     if (!address?.trim()) return;
     let debounce: number | null = null;
     const unsub = subscribePaperUser(address, {
-      onEvent: () => {
+      onEvent: (ev) => {
+        const kind = ev.event ?? "";
+        if (
+          (kind === "closed" || kind === "liquidated") &&
+          ev.market != null &&
+          ev.position != null
+        ) {
+          removeOpenPosition(ev.market, ev.position);
+          if (debounce != null) window.clearTimeout(debounce);
+          debounce = window.setTimeout(() => {
+            void refreshAccountAndPositions({ silent: true, opens: false });
+          }, 50);
+          return;
+        }
         if (debounce != null) window.clearTimeout(debounce);
         debounce = window.setTimeout(() => {
-          void refreshAccountAndPositions({ silent: true });
+          void refreshAccountAndPositions({ silent: true, opens: true });
         }, 50);
       },
     });
@@ -141,7 +165,7 @@ function TradeBody() {
       if (debounce != null) window.clearTimeout(debounce);
       unsub();
     };
-  }, [address, refreshAccountAndPositions]);
+  }, [address, refreshAccountAndPositions, removeOpenPosition]);
 
   useEffect(() => {
     if (!selected?.hl_symbol?.trim()) {
@@ -171,6 +195,42 @@ function TradeBody() {
       window.clearInterval(timer);
     };
   }, [selected?.hl_symbol]);
+
+  useEffect(() => {
+    if (!selected?.slug?.trim() || !selected.price_market?.trim()) {
+      setMarkSeed(null);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const fromMs = Date.now() - 10 * 60_000;
+        const hist = await getMarkHistory(selected.slug, {
+          fromMs,
+          limit: 600,
+        });
+        if (cancelled) return;
+        const points = (hist.ticks ?? [])
+          .map((tick) => {
+            const p = Number(tick.mark_price);
+            const t = Number(tick.t);
+            if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(t) || t <= 0) {
+              return null;
+            }
+            return { t, p };
+          })
+          .filter((row): row is { t: number; p: number } => row != null)
+          .sort((a, b) => a.t - b.t);
+        setMarkSeed(points.length ? points : null);
+      } catch {
+        if (!cancelled) setMarkSeed(null);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.slug, selected?.price_market]);
 
   useEffect(() => {
     if (!selected?.price_market?.trim()) {
@@ -221,6 +281,7 @@ function TradeBody() {
           <MarkPriceCurve
             key={selected?.price_market ?? selected?.slug ?? "none"}
             mark={mark}
+            seed={markSeed}
           />
         ) : isCandleInterval(chartView) ? (
           <CandleChart market={selected} interval={chartView} />

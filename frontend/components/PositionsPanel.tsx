@@ -70,10 +70,10 @@ export function PositionsPanel({
     setClosingId(key);
     try {
       await closePaper({ market: row.market, position: row.position });
+      setClosingId(null);
       await onClosed?.(row);
     } catch (err) {
       setCloseError(err instanceof Error ? err.message : "Close failed");
-    } finally {
       setClosingId(null);
     }
   }
@@ -200,7 +200,7 @@ export function PositionsPanel({
                         <button
                           type="button"
                           className="open-btn pos-close-btn"
-                          disabled={busy || closingId != null}
+                          disabled={busy}
                           onClick={() => void onClose(row)}
                         >
                           {busy ? "Closing…" : "Close"}

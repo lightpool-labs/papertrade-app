@@ -139,6 +139,7 @@ async fn main() {
                 .route("/markets", get(list_markets))
                 .route("/markets/:slug", get(get_market))
                 .route("/markets/:slug/bars", get(get_bars))
+                .route("/markets/:slug/mark/history", get(get_mark_history))
                 .route("/markets/:slug/mark", get(get_mark))
                 .route("/account", get(get_account))
                 .route("/positions", get(get_positions))
@@ -240,6 +241,30 @@ async fn get_mark(
         mark: oracle.mark_price,
         source: "indexer_oracle",
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct MarkHistoryQuery {
+    from_ms: Option<u64>,
+    limit: Option<usize>,
+}
+
+async fn get_mark_history(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    Query(query): Query<MarkHistoryQuery>,
+) -> AppResult<Json<indexer::IndexerOracleHistory>> {
+    let market = state.markets.get_by_slug(&slug)?;
+    if market.price_market.trim().is_empty() {
+        return Err(error::AppError::NotFound(format!(
+            "no price_market for {slug}"
+        )));
+    }
+    let history = state
+        .indexer
+        .get_oracle_mark_history(&market.price_market, query.from_ms, query.limit)
+        .await?;
+    Ok(Json(history))
 }
 
 async fn get_account(
