@@ -44,26 +44,3 @@ Status / clean runtime data (stop first):
 ./scripts/dev.sh status
 ./scripts/dev.sh clean
 ```
-
-Set `CARGO_WATCH=0` to run the backend once instead of `cargo watch`.
-
-## What bootstrap creates
-
-Via indexer submit (idempotent when `$DATA/bootstrap.json` exists):
-
-- tokens: **USDC**, **BTC**, **ETH**, **LPL**
-- spots: **BTC/USDC**, **ETH/USDC**
-- paper market + **BTC** instrument (`price_market` = BTC spot)
-- stake init + Committee bond/allocate
-- ~1M USDC paper deposit for anvil #0 (`PAPER_FUND_USDC` / `PAPER_FUND_KEY` to override)
-- writes `data/markets.json` and `$DATA/bootstrap.json`
-
-## Layout
-
-```
-papertrade-app/
-  backend/           # Rust BFF (INDEXER_URL only)
-  frontend/          # Next.js (Trade / Portfolio / House)
-  data/markets.json  # instrument registry (filled by bootstrap)
-  scripts/dev.sh     # local stack
-```
