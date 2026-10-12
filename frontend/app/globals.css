@@ -1,0 +1,740 @@
+:root {
+  color-scheme: light;
+  --bg: #eceef1;
+  --bg-panel: #ffffff;
+  --bg-elevated: #f5f6f8;
+  --border: #e2e5ea;
+  --text: #111827;
+  --text-muted: #8b93a1;
+  --accent: #111827;
+  --link: #5b7cfa;
+  --buy: #0ecb81;
+  --sell: #f6465d;
+  --hover: #f0f2f5;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(17, 24, 39, 0.04), 0 8px 24px rgba(17, 24, 39, 0.04);
+  --topbar-h: 48px;
+  --ticket-col-w: 340px;
+  --shell-pad: 12px;
+  --shell-gap: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--ticket-col-w);
+  grid-template-rows: var(--topbar-h) minmax(360px, 1fr) minmax(160px, 28vh);
+  grid-template-areas:
+    "top top"
+    "chart ticket"
+    "tabs ticket";
+  height: 100vh;
+  min-height: 640px;
+  overflow: hidden;
+  gap: var(--shell-gap);
+  padding: var(--shell-pad);
+  background: var(--bg);
+}
+
+.shell-top {
+  grid-area: top;
+}
+
+.topbar {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.logo {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.nav-links {
+  display: flex;
+  gap: 8px;
+}
+
+.nav-link {
+  color: var(--text-muted);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.nav-link.active,
+.nav-link:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+
+.chart-stack {
+  grid-area: chart;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.paper-ticket {
+  grid-area: ticket;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 0;
+  overflow: auto;
+}
+
+.ticket-body {
+  padding: 12px;
+}
+
+.bottom-panel {
+  grid-area: tabs;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.account-chip {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: transparent;
+  user-select: all;
+}
+
+.instrument-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 56px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.instrument-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.instrument-switcher {
+  display: flex;
+  gap: 6px;
+}
+
+.instrument-chip {
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 400;
+}
+
+.instrument-chip.active {
+  color: var(--text);
+  border-color: var(--text);
+  background: var(--hover);
+}
+
+.instrument-quote {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.mark-price {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.mark-change {
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.mark-change.up {
+  color: var(--buy);
+}
+
+.mark-change.down {
+  color: var(--sell);
+}
+
+.mark-change.flat {
+  color: var(--text-muted);
+}
+
+.instrument-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.meta-muted {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.chart-view-select {
+  appearance: none;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 24px 4px 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 400;
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 12px) 55%, calc(100% - 7px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.chart-view-select:hover,
+.chart-view-select:focus {
+  border-color: var(--text-muted);
+  outline: none;
+}
+
+.banner.error {
+  padding: 8px 12px;
+  color: var(--sell);
+  background: rgba(246, 70, 93, 0.08);
+  border-bottom: 1px solid var(--border);
+}
+
+.candle-chart {
+  flex: 1;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg-panel);
+}
+
+.candle-status-bar {
+  padding: 4px 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.candle-canvas {
+  flex: 1;
+  min-height: 220px;
+  position: relative;
+}
+
+.mark-curve {
+  flex: 1;
+  min-height: 240px;
+  position: relative;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% 100%, rgba(14, 203, 129, 0.04), transparent 70%),
+    var(--bg-panel);
+}
+
+.mark-curve.panning {
+  cursor: grabbing;
+}
+
+.mark-curve-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.side-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.side-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+}
+
+.side-btn.long.active {
+  background: rgba(14, 203, 129, 0.12);
+  border-color: var(--buy);
+  color: var(--buy);
+}
+
+.side-btn.short.active {
+  background: rgba(246, 70, 93, 0.12);
+  border-color: var(--sell);
+  color: var(--sell);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.field input[type="text"],
+.field input:not([type]),
+.field input[inputmode] {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.field input[type="range"] {
+  --slider-pct: 0%;
+  --slider-fill: var(--buy);
+  --slider-rest: rgba(14, 203, 129, 0.22);
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.field input[type="range"]::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--slider-fill) 0%,
+    var(--slider-fill) var(--slider-pct),
+    var(--slider-rest) var(--slider-pct),
+    var(--slider-rest) 100%
+  );
+}
+
+.field input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  border: none;
+  background: var(--slider-fill);
+  box-shadow: 0 0 0 2px #ffffff;
+}
+
+.field input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--slider-fill) 0%,
+    var(--slider-fill) var(--slider-pct),
+    var(--slider-rest) var(--slider-pct),
+    var(--slider-rest) 100%
+  );
+}
+
+.field input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: var(--slider-fill);
+  box-shadow: 0 0 0 2px #ffffff;
+}
+
+.pct-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.chip-btn {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+  font-weight: 400;
+}
+
+.chip-btn.active {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.ticket-row.muted,
+.ticket-footnote,
+.ticket-status {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ticket-stats {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.ticket-stats div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ticket-stats span {
+  color: var(--text-muted);
+}
+
+.ticket-stats strong {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.ticket-stats strong.pnl-win,
+.ticket-stats strong.pnl-loss {
+  font-weight: 400;
+}
+
+.open-btn {
+  width: 100%;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: var(--buy);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.bottom-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 4px 8px;
+}
+
+.tab.active {
+  color: var(--text);
+}
+
+.bottom-empty,
+.stub-page {
+  padding: 24px;
+  color: var(--text-muted);
+}
+
+.account-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.account-ticket-stats {
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+
+.equity-tab-body {
+  padding: 12px 14px;
+  overflow: auto;
+}
+
+.account-panel-row {
+  flex-wrap: nowrap;
+  gap: 24px 32px;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.account-panel-row .account-cell {
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.account-panel-row .account-value {
+  font-weight: 400;
+  font-size: inherit;
+  color: var(--text);
+}
+
+.account-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 88px;
+}
+
+.account-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.account-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.pos-table-wrap {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.pos-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-table th,
+.pos-table td {
+  text-align: left;
+  padding: 8px 12px;
+  white-space: nowrap;
+  border-bottom: none;
+}
+
+.pos-table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 11px;
+}
+
+.side-long {
+  color: var(--buy);
+}
+
+.side-short {
+  color: var(--sell);
+}
+
+.pos-close-btn {
+  width: auto;
+  padding: 8px 14px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pos-close-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pnl-win {
+  color: var(--buy);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.pnl-loss {
+  color: var(--sell);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.house-shell .house-main,
+.portfolio-shell .portfolio-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--shell-gap);
+  min-height: calc(100vh - var(--topbar-h) - var(--shell-pad) * 2 - var(--shell-gap));
+}
+
+.house-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.house-head h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.house-market {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+.house-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--shell-gap);
+}
+
+.house-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+
+.house-card h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.banner.warn {
+  background: rgba(246, 70, 93, 0.08);
+  border: 1px solid rgba(246, 70, 93, 0.35);
+  color: var(--sell);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+}
+
+.portfolio-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.portfolio-head h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.portfolio-shell .bottom-panel {
+  flex: 1;
+  min-height: 280px;
+}
+
+.portfolio-shell .account-strip {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.stub-shell {
+  min-height: 100vh;
+  padding: var(--shell-pad);
+  background: var(--bg);
+}
+
+.stub-shell .topbar {
+  height: var(--topbar-h);
+  margin-bottom: var(--shell-gap);
+}
+
+.stub-page {
+  min-height: calc(100vh - var(--topbar-h) - var(--shell-pad) * 2 - var(--shell-gap));
+  background: var(--bg);
+}
+
+@media (max-width: 960px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: var(--topbar-h) auto auto auto;
+    grid-template-areas:
+      "top"
+      "chart"
+      "ticket"
+      "tabs";
+    height: auto;
+    overflow: auto;
+  }
+}

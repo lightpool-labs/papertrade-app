@@ -1,0 +1,27 @@
+{
+  "paper_market": "0x0c01000000000001",
+  "quote_decimals": 6,
+  "liq_buffer_ppm": 500,
+  "instruments": [
+    {
+      "id": 0,
+      "slug": "btc",
+      "name": "BTC",
+      "hl_symbol": "BTC",
+      "price_market": "0x0300000000000001",
+      "max_leverage": 1000,
+      "min_margin": 1,
+      "retired": false
+    },
+    {
+      "id": 1,
+      "slug": "eth",
+      "name": "ETH",
+      "hl_symbol": "ETH",
+      "price_market": "",
+      "max_leverage": 1000,
+      "min_margin": 1,
+      "retired": true
+    }
+  ]
+}
