@@ -30,7 +30,7 @@ No Reth or bridge.
 ./scripts/dev.sh start
 ```
 
-Open http://127.0.0.1:3000 → `/trade/btc`.
+Open http://127.0.0.1:3000/trade/btc` 
 
 Stop:
 
