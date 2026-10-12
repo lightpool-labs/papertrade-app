@@ -51,6 +51,14 @@ function TradeBody() {
 
   const prevDayPxRef = useRef<number | null>(null);
   const markRef = useRef<number | null>(null);
+  /** Locally closed ids — ignore if a stale opens snapshot still includes them. */
+  const closedIdsRef = useRef<Set<string>>(new Set());
+  /** Skip wholesale opens refresh briefly after a close (poll / stale WS). */
+  const suppressOpensUntilRef = useRef(0);
+
+  const posId = useCallback((market: string, position: number) => {
+    return `${market.trim().toLowerCase()}:${position}`;
+  }, []);
 
   const refreshMarkets = useCallback(async () => {
     setError(null);
@@ -65,10 +73,60 @@ function TradeBody() {
     }
   }, [slug]);
 
+  const applyOpenSnapshot = useCallback(
+    (next: PaperPositionOpen[]) => {
+      const closed = closedIdsRef.current;
+      const filtered = next.filter(
+        (p) => !closed.has(posId(p.market, p.position)),
+      );
+      setOpenPositions((prev) => {
+        if (
+          prev.length === filtered.length &&
+          prev.every((row, i) => {
+            const n = filtered[i];
+            return (
+              n &&
+              posId(row.market, row.position) === posId(n.market, n.position) &&
+              row.margin === n.margin &&
+              row.notional === n.notional &&
+              row.entry_price === n.entry_price &&
+              row.bust_price === n.bust_price &&
+              row.is_long === n.is_long
+            );
+          })
+        ) {
+          return prev;
+        }
+        const prevById = new Map(
+          prev.map((row) => [posId(row.market, row.position), row]),
+        );
+        return filtered.map((row) => {
+          const id = posId(row.market, row.position);
+          const old = prevById.get(id);
+          if (
+            old &&
+            old.margin === row.margin &&
+            old.notional === row.notional &&
+            old.entry_price === row.entry_price &&
+            old.bust_price === row.bust_price &&
+            old.is_long === row.is_long &&
+            old.instrument === row.instrument
+          ) {
+            return old;
+          }
+          return row;
+        });
+      });
+    },
+    [posId],
+  );
+
   const refreshAccountAndPositions = useCallback(
     async (opts?: { silent?: boolean; opens?: boolean }) => {
       const silent = opts?.silent === true;
-      const refreshOpens = opts?.opens !== false;
+      const wantOpens = opts?.opens !== false;
+      const refreshOpens =
+        wantOpens && Date.now() >= suppressOpensUntilRef.current;
       if (!silent) setPosLoading(true);
       setPosError(null);
       const market = selected?.paper_market?.trim() || undefined;
@@ -89,7 +147,7 @@ function TradeBody() {
             listPositions(address, { market, status: "open" }),
             listHistory(address, market),
           ]);
-          setOpenPositions(pos.open ?? []);
+          applyOpenSnapshot(pos.open ?? []);
           setHistory(hist.history ?? []);
         } else {
           const hist = await listHistory(address, market);
@@ -103,23 +161,31 @@ function TradeBody() {
         if (!silent) setPosLoading(false);
       }
     },
-    [address, selected?.paper_market],
+    [address, selected?.paper_market, applyOpenSnapshot],
   );
 
-  const removeOpenPosition = useCallback((market: string, position: number) => {
-    setOpenPositions((prev) =>
-      prev.filter((p) => !(p.market === market && p.position === position)),
-    );
-  }, []);
+  const removeOpenPosition = useCallback(
+    (market: string, position: number) => {
+      closedIdsRef.current.add(posId(market, position));
+      suppressOpensUntilRef.current = Date.now() + 3_000;
+      setOpenPositions((prev) =>
+        prev.filter(
+          (p) => posId(p.market, p.position) !== posId(market, position),
+        ),
+      );
+    },
+    [posId],
+  );
 
   const onOpened = useCallback(() => {
+    suppressOpensUntilRef.current = 0;
     void refreshAccountAndPositions({ silent: true, opens: true });
   }, [refreshAccountAndPositions]);
 
   const onClosed = useCallback(
     (row: PaperPositionOpen) => {
       removeOpenPosition(row.market, row.position);
-      // Account + history only — do not replace the open table (avoids row flash).
+      // Account + history only — never replace the open table on close.
       void refreshAccountAndPositions({ silent: true, opens: false });
     },
     [refreshAccountAndPositions, removeOpenPosition],
@@ -142,7 +208,7 @@ function TradeBody() {
     let debounce: number | null = null;
     const unsub = subscribePaperUser(address, {
       onEvent: (ev) => {
-        const kind = ev.event ?? "";
+        const kind = (ev.event ?? "").toLowerCase();
         if (
           (kind === "closed" || kind === "liquidated") &&
           ev.market != null &&
@@ -155,8 +221,11 @@ function TradeBody() {
           }, 50);
           return;
         }
+        // Only full open-table refresh on a new open — ignore unknown events.
+        if (kind !== "opened") return;
         if (debounce != null) window.clearTimeout(debounce);
         debounce = window.setTimeout(() => {
+          suppressOpensUntilRef.current = 0;
           void refreshAccountAndPositions({ silent: true, opens: true });
         }, 50);
       },

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import type {
   Market,
   PaperAccount,
@@ -43,6 +43,144 @@ function pnlClass(value: number | null): string {
   return value > 0 ? "pnl-win" : "pnl-loss";
 }
 
+function posKey(market: string, position: number): string {
+  return `${market.trim().toLowerCase()}:${position}`;
+}
+
+type OpenRowProps = {
+  markets: Market[];
+  row: PaperPositionOpen;
+  mark: number | null;
+  busy: boolean;
+  onClose: (row: PaperPositionOpen) => void;
+};
+
+const OpenPositionRow = memo(function OpenPositionRow({
+  markets,
+  row,
+  mark,
+  busy,
+  onClose,
+}: OpenRowProps) {
+  const entry = parseAmount(row.entry_price);
+  const notional = parseAmount(row.notional);
+  const margin = parseAmount(row.margin);
+  const pnl = unrealizedPnl(entry, mark ?? NaN, notional, row.is_long);
+  const roe =
+    pnl != null && Number.isFinite(margin) && margin > 0
+      ? (pnl / margin) * 100
+      : null;
+
+  return (
+    <tr>
+      <td className="c-inst">{instrumentName(markets, row.instrument)}</td>
+      <td className={row.is_long ? "side-long c-side" : "side-short c-side"}>
+        {row.is_long ? "Long" : "Short"}
+      </td>
+      <td className="c-num c-margin">
+        {Number.isFinite(margin) ? `$${formatUsd(margin)}` : row.margin}
+      </td>
+      <td className="c-num c-notional">
+        {Number.isFinite(notional) ? `$${formatUsd(notional)}` : row.notional}
+      </td>
+      <td className="c-num c-entry">
+        {Number.isFinite(entry) ? `$${formatPrice(entry)}` : row.entry_price}
+      </td>
+      <td className="c-num c-mark">
+        {mark != null && mark > 0 ? `$${formatPrice(mark)}` : "—"}
+      </td>
+      <td className={`c-num c-upnl ${pnlClass(pnl)}`.trim()}>
+        {pnl == null ? "—" : formatMoney(pnl)}
+      </td>
+      <td className={`c-num c-roe ${pnlClass(roe)}`.trim()}>
+        {roe == null ? "—" : `${roe >= 0 ? "+" : ""}${roe.toFixed(2)}%`}
+      </td>
+      <td className="c-num c-bust">
+        {Number.isFinite(parseAmount(row.bust_price))
+          ? `$${formatPrice(parseAmount(row.bust_price))}`
+          : row.bust_price}
+      </td>
+      <td className="c-num c-pos">{row.position}</td>
+      <td className="c-action">
+        <button
+          type="button"
+          className="open-btn pos-close-btn"
+          disabled={busy}
+          onClick={() => onClose(row)}
+        >
+          {busy ? "Closing…" : "Close"}
+        </button>
+      </td>
+    </tr>
+  );
+});
+
+type OpenTableProps = {
+  markets: Market[];
+  rows: PaperPositionOpen[];
+  mark: number | null;
+  closingId: string | null;
+  onClose: (row: PaperPositionOpen) => void;
+};
+
+const OpenPositionsTable = memo(function OpenPositionsTable({
+  markets,
+  rows,
+  mark,
+  closingId,
+  onClose,
+}: OpenTableProps) {
+  return (
+    <div className="pos-table-wrap">
+      <table className="pos-table pos-table-open">
+        <colgroup>
+          <col className="c-inst" />
+          <col className="c-side" />
+          <col className="c-margin" />
+          <col className="c-notional" />
+          <col className="c-entry" />
+          <col className="c-mark" />
+          <col className="c-upnl" />
+          <col className="c-roe" />
+          <col className="c-bust" />
+          <col className="c-pos" />
+          <col className="c-action" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Instrument</th>
+            <th>Side</th>
+            <th className="c-num">Margin</th>
+            <th className="c-num">Notional</th>
+            <th className="c-num">Entry</th>
+            <th className="c-num">Mark</th>
+            <th className="c-num">uPnL</th>
+            <th className="c-num">ROE</th>
+            <th className="c-num">Bust</th>
+            <th className="c-num">Pos #</th>
+            <th className="c-action" />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const rowKey = posKey(row.market, row.position);
+            return (
+              <OpenPositionRow
+                key={rowKey}
+                markets={markets}
+                row={row}
+                mark={mark}
+                busy={closingId === rowKey}
+                onClose={onClose}
+              />
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+});
+
 export function PositionsPanel({
   markets,
   open,
@@ -64,19 +202,22 @@ export function PositionsPanel({
     return open.filter((r) => r.instrument === instrumentId);
   }, [open, instrumentId]);
 
-  async function onClose(row: PaperPositionOpen) {
-    const key = `${row.market}:${row.position}`;
-    setCloseError(null);
-    setClosingId(key);
-    try {
-      await closePaper({ market: row.market, position: row.position });
-      setClosingId(null);
-      await onClosed?.(row);
-    } catch (err) {
-      setCloseError(err instanceof Error ? err.message : "Close failed");
-      setClosingId(null);
-    }
-  }
+  const onClose = useCallback(
+    async (row: PaperPositionOpen) => {
+      const key = posKey(row.market, row.position);
+      setCloseError(null);
+      setClosingId(key);
+      try {
+        await closePaper({ market: row.market, position: row.position });
+        await onClosed?.(row);
+      } catch (err) {
+        setCloseError(err instanceof Error ? err.message : "Close failed");
+      } finally {
+        setClosingId(null);
+      }
+    },
+    [onClosed],
+  );
 
   return (
     <section className="bottom-panel">
@@ -122,96 +263,13 @@ export function PositionsPanel({
         ) : openRows.length === 0 ? (
           <div className="bottom-empty">No open positions</div>
         ) : (
-          <div className="pos-table-wrap">
-            <table className="pos-table">
-              <thead>
-                <tr>
-                  <th>Instrument</th>
-                  <th>Side</th>
-                  <th>Margin</th>
-                  <th>Notional</th>
-                  <th>Entry</th>
-                  <th>Mark</th>
-                  <th>uPnL</th>
-                  <th>ROE</th>
-                  <th>Bust</th>
-                  <th>Pos #</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {openRows.map((row) => {
-                  const entry = parseAmount(row.entry_price);
-                  const notional = parseAmount(row.notional);
-                  const margin = parseAmount(row.margin);
-                  const rowKey = `${row.market}:${row.position}`;
-                  const pnl = unrealizedPnl(
-                    entry,
-                    mark ?? NaN,
-                    notional,
-                    row.is_long,
-                  );
-                  const roe =
-                    pnl != null && Number.isFinite(margin) && margin > 0
-                      ? (pnl / margin) * 100
-                      : null;
-                  const busy = closingId === rowKey;
-                  return (
-                    <tr key={rowKey}>
-                      <td>{instrumentName(markets, row.instrument)}</td>
-                      <td className={row.is_long ? "side-long" : "side-short"}>
-                        {row.is_long ? "Long" : "Short"}
-                      </td>
-                      <td>
-                        {Number.isFinite(margin)
-                          ? `$${formatUsd(margin)}`
-                          : row.margin}
-                      </td>
-                      <td>
-                        {Number.isFinite(notional)
-                          ? `$${formatUsd(notional)}`
-                          : row.notional}
-                      </td>
-                      <td>
-                        {Number.isFinite(entry)
-                          ? `$${formatPrice(entry)}`
-                          : row.entry_price}
-                      </td>
-                      <td>
-                        {mark != null && mark > 0
-                          ? `$${formatPrice(mark)}`
-                          : "—"}
-                      </td>
-                      <td className={pnlClass(pnl)}>
-                        {pnl == null ? "—" : formatMoney(pnl)}
-                      </td>
-                      <td className={pnlClass(roe)}>
-                        {roe == null
-                          ? "—"
-                          : `${roe >= 0 ? "+" : ""}${roe.toFixed(2)}%`}
-                      </td>
-                      <td>
-                        {Number.isFinite(parseAmount(row.bust_price))
-                          ? `$${formatPrice(parseAmount(row.bust_price))}`
-                          : row.bust_price}
-                      </td>
-                      <td>{row.position}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="open-btn pos-close-btn"
-                          disabled={busy}
-                          onClick={() => void onClose(row)}
-                        >
-                          {busy ? "Closing…" : "Close"}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <OpenPositionsTable
+            markets={markets}
+            rows={openRows}
+            mark={mark}
+            closingId={closingId}
+            onClose={onClose}
+          />
         )
       ) : loading && history.length === 0 ? (
         <div className="bottom-empty">Loading history…</div>

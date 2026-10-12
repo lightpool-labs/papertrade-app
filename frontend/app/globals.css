@@ -580,6 +580,8 @@ button {
 
 .pos-table {
   width: 100%;
+  min-width: 980px;
+  table-layout: fixed;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
 }
@@ -587,8 +589,10 @@ button {
 .pos-table th,
 .pos-table td {
   text-align: left;
-  padding: 8px 12px;
+  padding: 8px 10px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   border-bottom: none;
 }
 
@@ -596,6 +600,31 @@ button {
   color: var(--text-muted);
   font-weight: 500;
   font-size: 11px;
+}
+
+/* Open positions: fixed cols so mark/uPnL digit changes don't reflow the table. */
+.pos-table-open col.c-inst { width: 72px; }
+.pos-table-open col.c-side { width: 64px; }
+.pos-table-open col.c-margin { width: 96px; }
+.pos-table-open col.c-notional { width: 104px; }
+.pos-table-open col.c-entry { width: 104px; }
+.pos-table-open col.c-mark { width: 104px; }
+.pos-table-open col.c-upnl { width: 104px; }
+.pos-table-open col.c-roe { width: 80px; }
+.pos-table-open col.c-bust { width: 104px; }
+.pos-table-open col.c-pos { width: 56px; }
+.pos-table-open col.c-action { width: 96px; }
+
+.pos-table-open td.c-num,
+.pos-table-open th.c-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-table-open td.c-action,
+.pos-table-open th.c-action {
+  text-align: right;
+  overflow: visible;
 }
 
 .side-long {
