@@ -1,20 +1,10 @@
-# Papertrader App
-
-LightPool Papertrade-style product (prediction / paper perps UI): Next.js frontend +
-Rust BFF. Design: [`../tools/paper/DESIGN.md`](../tools/paper/DESIGN.md).
-App plan: [`../tools/paper/APP.md`](../tools/paper/APP.md).
+# Papertrade App
 
 ```bash
 mkdir -p lightpool-labs && cd lightpool-labs
 git clone git@github.com:lightpool-labs/papertrade-app.git
 cd papertrade-app
 ```
-
-Requires sibling repos under `lightpool-labs/` (same layout as tokenized-stocks):
-`lightpool-node`, `lightpool-sdk-rust`, `lightpool-clob-indexer`, `lightpool-oracle`
-(and `lightpool-crypto` / `lightpool-tutorials` if you follow the stocks download
-scripts). Chain access is **BFF → indexer → node** only — no direct LightPool RPC
-from the backend.
 
 ## Step 1
 
