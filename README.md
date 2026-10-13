@@ -1,5 +1,7 @@
 # Papertrade App
 
+papertrade-app implements a Papertrade-style synthetic perpetuals exchange on LightPool—Long/Short up to 1000x against the house as counterparty, with CEX-smooth trading and no wallet popups on every order. Losers farm PAPER to become shareholders of the exchange, and stake PAPER to earn fees.
+
 ```bash
 mkdir -p lightpool-labs && cd lightpool-labs
 git clone git@github.com:lightpool-labs/papertrade-app.git
