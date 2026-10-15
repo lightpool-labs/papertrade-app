@@ -2,8 +2,9 @@
 
 import { useState, type CSSProperties } from "react";
 import type { Market, PaperAccount } from "@/lib/api";
-import { openPaper } from "@/lib/api";
 import { AccountStrip } from "@/components/AccountStrip";
+import { FundDialog } from "@/components/FundDialog";
+import { useWallet } from "@/components/WalletProvider";
 import { bustPrice, formatPrice, formatUsd } from "@/lib/math";
 
 type Props = {
@@ -26,11 +27,14 @@ export function PaperTicket({
   openPnl = null,
   onOpened,
 }: Props) {
+  const { busy: walletBusy, openPaper } = useWallet();
   const [isLong, setIsLong] = useState(true);
   const [margin, setMargin] = useState("100");
   const [leverage, setLeverage] = useState(100);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [fundKind, setFundKind] = useState<"deposit" | "withdraw" | null>(null);
+  const locked = busy || walletBusy;
 
   const maxLev = market?.max_leverage ?? 1000;
   const bufferPpm = market?.liq_buffer_ppm ?? 500;
@@ -90,7 +94,7 @@ export function PaperTicket({
             type="button"
             className={`side-btn long${isLong ? " active" : ""}`}
             onClick={() => setIsLong(true)}
-            disabled={busy}
+            disabled={locked}
           >
             Long
           </button>
@@ -98,7 +102,7 @@ export function PaperTicket({
             type="button"
             className={`side-btn short${!isLong ? " active" : ""}`}
             onClick={() => setIsLong(false)}
-            disabled={busy}
+            disabled={locked}
           >
             Short
           </button>
@@ -110,7 +114,7 @@ export function PaperTicket({
             value={margin}
             onChange={(e) => setMargin(e.target.value)}
             inputMode="decimal"
-            disabled={busy}
+            disabled={locked}
           />
         </label>
 
@@ -120,7 +124,7 @@ export function PaperTicket({
               key={pct}
               type="button"
               className="chip-btn"
-              disabled={busy}
+              disabled={locked}
               onClick={() => setMargin(String(Math.max(1, pct)))}
             >
               {pct === 100 ? "MAX" : `${pct}%`}
@@ -135,7 +139,7 @@ export function PaperTicket({
             min={1}
             max={maxLev}
             value={leverage}
-            disabled={busy}
+            disabled={locked}
             style={
               {
                 ["--slider-pct"]: `${((leverage - 1) / Math.max(1, maxLev - 1)) * 100}%`,
@@ -151,7 +155,7 @@ export function PaperTicket({
               key={lev}
               type="button"
               className={`chip-btn${leverage === lev ? " active" : ""}`}
-              disabled={busy}
+              disabled={locked}
               onClick={() => setLeverage(lev)}
             >
               {lev}x
@@ -177,7 +181,7 @@ export function PaperTicket({
         <button
           type="button"
           className="open-btn"
-          disabled={busy}
+          disabled={locked}
           onClick={() => void onOpen()}
         >
           {busy
@@ -194,8 +198,41 @@ export function PaperTicket({
           openPnl={openPnl}
         />
 
+        <div className="ticket-fund">
+          <div className="fund-actions">
+            <button
+              type="button"
+              className="fund-deposit"
+              disabled={locked || !market?.paper_market}
+              onClick={() => setFundKind("deposit")}
+            >
+              Deposit
+            </button>
+            <button
+              type="button"
+              className="fund-withdraw"
+              disabled={locked || !market?.paper_market}
+              onClick={() => setFundKind("withdraw")}
+            >
+              Withdraw
+            </button>
+          </div>
+        </div>
+
         {status ? <p className="ticket-status">{status}</p> : null}
       </div>
+
+      {fundKind && market?.paper_market ? (
+        <FundDialog
+          kind={fundKind}
+          paperMarket={market.paper_market}
+          onClose={() => setFundKind(null)}
+          onDone={async () => {
+            setFundKind(null);
+            await onOpened?.();
+          }}
+        />
+      ) : null}
     </aside>
   );
 }

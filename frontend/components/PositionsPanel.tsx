@@ -7,7 +7,7 @@ import type {
   PaperPositionHistory,
   PaperPositionOpen,
 } from "@/lib/api";
-import { closePaper } from "@/lib/api";
+import { useWallet } from "@/components/WalletProvider";
 import { AccountStrip } from "@/components/AccountStrip";
 import {
   formatMoney,
@@ -193,6 +193,7 @@ export function PositionsPanel({
   openPnl = null,
   onClosed,
 }: Props) {
+  const { closePaper } = useWallet();
   const [tab, setTab] = useState<Tab>("positions");
   const [closingId, setClosingId] = useState<string | null>(null);
   const [closeError, setCloseError] = useState<string | null>(null);
@@ -208,7 +209,7 @@ export function PositionsPanel({
       setCloseError(null);
       setClosingId(key);
       try {
-        await closePaper({ market: row.market, position: row.position });
+        await closePaper(row.market, row.position);
         await onClosed?.(row);
       } catch (err) {
         setCloseError(err instanceof Error ? err.message : "Close failed");
@@ -216,7 +217,7 @@ export function PositionsPanel({
         setClosingId(null);
       }
     },
-    [onClosed],
+    [closePaper, onClosed],
   );
 
   return (

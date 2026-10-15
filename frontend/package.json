@@ -9,6 +9,8 @@
     "start": "next start -p 3000"
   },
   "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "@noble/secp256k1": "^2.3.0",
     "lightweight-charts": "^5.2.1",
     "next": "^14.2.0",
     "react": "^18.3.0",

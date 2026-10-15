@@ -1,8 +1,11 @@
 // Copyright (c) LightPool Labs
 // Author: xiaoyu1998
 //! Bootstrap local paper stack: USDC + BTC + ETH tokens, BTC/USDC + ETH/USDC spots,
-//! paper market with BTC instrument, LPL + stake (Committee), and a paper USDC
-//! deposit for local MetaMask (anvil #1 trader) so P2–P5 can trade without ETH bridge.
+//! paper market with BTC instrument, LPL + stake (Committee).
+//!
+//! When `USDC_LP` is set (dev.sh Reth bridge path), reuse that bridged LP USDC as
+//! quote instead of `create_token`. Set `SKIP_PAPER_FUND=1` so the demo user funds
+//! Available via Reth → bridge → deposit UI (not admin transfer).
 //! Submits via clob-indexer (no direct node RPC). Does **not** call prom_*;
 //! RunningCommittee fills after the first epoch (~1000 blocks) via epoch epilogue.
 
@@ -102,9 +105,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sync_markets_from_state(&state_path, &markets_path)?;
         serde_json::from_str::<BootstrapState>(&fs::read_to_string(&state_path)?)?
     } else {
-        println!("create token USDC");
-        let usdc = create_token(&client, &signer, "USD Coin", "USDC").await?;
-        println!("ok    USDC {usdc}");
+        let usdc = match env::var("USDC_LP") {
+            Ok(raw) if !raw.trim().is_empty() => {
+                let usdc = raw.trim().to_string();
+                println!("use    bridged LP USDC {usdc}");
+                usdc
+            }
+            _ => {
+                println!("create token USDC");
+                let usdc = create_token(&client, &signer, "USD Coin", "USDC").await?;
+                println!("ok    USDC {usdc}");
+                usdc
+            }
+        };
 
         println!("create token BTC");
         let btc = create_token(&client, &signer, "Bitcoin", "BTC").await?;
@@ -163,33 +176,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("skip  LPL stake (already {})", state.lpl.as_deref().unwrap_or(""));
     }
 
-    // Paper account funding (no ETH bridge until ~P6): deposit quote USDC so Trade
-    // Available is non-zero. Default trader = anvil/Hardhat #1 (not admin #0).
-    let fund_usdc = env::var("PAPER_FUND_USDC")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_PAPER_FUND_USDC);
-    let fund_key = env::var("PAPER_FUND_KEY").unwrap_or_else(|_| DEFAULT_USER_KEY.to_string());
-    let user = load_signer(&fund_key)?;
-    let fund_addr = user.address().to_string();
-    let already_funded = !state.paper_funded_for.is_empty()
-        && state
-            .paper_funded_for
-            .eq_ignore_ascii_case(fund_addr.trim());
-    if already_funded {
-        println!("skip  paper USDC fund (already funded {fund_addr})");
+    // Optional admin → paper Available credit. Skip when Reth bridge funds the user.
+    let skip_paper_fund = env::var("SKIP_PAPER_FUND")
+        .map(|v| v.trim() == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if skip_paper_fund {
+        println!("skip  paper USDC fund (SKIP_PAPER_FUND=1; use Reth deposit)");
     } else {
-        fund_paper_usdc(
-            &client,
-            &signer,
-            &user,
-            &state.usdc,
-            &state.paper_market,
-            fund_usdc,
-        )
-        .await?;
-        state.paper_funded = true;
-        state.paper_funded_for = fund_addr;
+        let fund_usdc = env::var("PAPER_FUND_USDC")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_PAPER_FUND_USDC);
+        let fund_key = env::var("PAPER_FUND_KEY").unwrap_or_else(|_| DEFAULT_USER_KEY.to_string());
+        let user = load_signer(&fund_key)?;
+        let fund_addr = user.address().to_string();
+        let already_funded = !state.paper_funded_for.is_empty()
+            && state
+                .paper_funded_for
+                .eq_ignore_ascii_case(fund_addr.trim());
+        if already_funded {
+            println!("skip  paper USDC fund (already funded {fund_addr})");
+        } else {
+            fund_paper_usdc(
+                &client,
+                &signer,
+                &user,
+                &state.usdc,
+                &state.paper_market,
+                fund_usdc,
+            )
+            .await?;
+            state.paper_funded = true;
+            state.paper_funded_for = fund_addr;
+        }
     }
 
     if let Some(parent) = state_path.parent() {

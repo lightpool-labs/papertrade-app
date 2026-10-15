@@ -6,11 +6,15 @@
 //!
 //! Standalone CLI — not wired into `scripts/dev.sh`.
 //!
+//! Funding (--fund-usdc > 0): admin bridge-deposits Reth USDC (minted in
+//! scripts/dev.sh) into LightPool → transfers to workers → deposit_paper.
+//! Requires eth-bridge.json + running Reth/bridge + admin Reth USDC.
+//!
 //! Example:
 //! ```text
 //! cargo run --release --bin hold-opens -- \
 //!   --accounts 100 --target 10000 --rate 100 \
-//!   --fund-usdc 2000000 --margin-min 5 --margin-max 1000 \
+//!   --fund-usdc 200000 --margin-min 5 --margin-max 1000 \
 //!   --leverage-min 1000 --leverage-max 1000 \
 //!   --take-profit-pct 50
 //! ```
@@ -31,6 +35,7 @@ use lightpool_sdk::{
     extract_paper_opened, parse_token_contract, ActionBuilder, PaperCloseParams,
     PaperDepositParams, PaperOpenParams, Signer, TransactionBuilder, TransferParams, TOKEN_SCALE,
 };
+use std::process::Command;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use reqwest::Client;
@@ -66,6 +71,18 @@ struct Args {
         default_value = "../../data/papertrader/bootstrap.json"
     )]
     bootstrap_path: PathBuf,
+
+    /// eth-bridge.json (Reth USDC + bridge). Required when --fund-usdc > 0.
+    #[arg(
+        long,
+        env = "BRIDGE_STATE_PATH",
+        default_value = "../../data/papertrader/eth-bridge.json"
+    )]
+    bridge_state_path: PathBuf,
+
+    /// Reth HTTP RPC (admin bridge deposit; mint is done in scripts/dev.sh).
+    #[arg(long, env = "RETH_RPC", default_value = "http://127.0.0.1:8545")]
+    reth_rpc: String,
 
     /// Admin / USDC holder private key (hex).
     #[arg(long, env = "ADMIN_KEY", default_value = DEFAULT_ADMIN_KEY)]
@@ -165,6 +182,24 @@ struct BootstrapFile {
 }
 
 #[derive(Debug, Deserialize)]
+struct BridgeStateFile {
+    evm_bridge: String,
+    tokens: Vec<BridgeTokenFile>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeTokenFile {
+    symbol: String,
+    evm: String,
+    lp: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BalanceEntry {
+    available: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct HouseBody {
     house: HouseView,
 }
@@ -249,6 +284,37 @@ impl IndexerHttp {
         }
         let body: HouseBody = serde_json::from_str(&text).context("decode house")?;
         Ok(body.house.open_positions)
+    }
+
+    /// LP token available (6-decimal raw) via indexer balances.
+    async fn lp_available_raw(&self, address: &str, lp_token: &str) -> Result<u64> {
+        let url = format!(
+            "{}/api/accounts/{}/balances",
+            self.base_url,
+            urlencoding_encode(address.trim())
+        );
+        let body = json!({
+            "tokens": [{ "symbol": "USDC", "address": lp_token }]
+        });
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .context("get balances")?;
+        let status = response.status();
+        let text = response.text().await.context("balances body")?;
+        if !status.is_success() {
+            bail!("balances HTTP {status}: {text}");
+        }
+        let entries: Vec<BalanceEntry> =
+            serde_json::from_str(&text).context("decode balances")?;
+        let avail = entries
+            .first()
+            .map(|e| e.available.as_str())
+            .unwrap_or("0");
+        parse_human_amount6_raw(avail)
     }
 
     async fn oracle_mark_raw(&self, spot_market: &str) -> Result<u64> {
@@ -372,14 +438,143 @@ fn roe_pct(is_long: bool, entry: u64, mark: u64, notional: u64, margin: u64) -> 
 
 const FUND_TRANSFER_BATCH: usize = 100;
 
+fn parse_human_amount6_raw(raw: &str) -> Result<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    let (whole, frac) = match trimmed.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (trimmed, ""),
+    };
+    if !whole.chars().all(|c| c.is_ascii_digit())
+        || frac.len() > 6
+        || !frac.chars().all(|c| c.is_ascii_digit())
+    {
+        bail!("invalid amount string: {raw}");
+    }
+    let whole_u: u64 = if whole.is_empty() {
+        0
+    } else {
+        whole.parse().context("amount whole")?
+    };
+    let frac_padded = format!("{frac:0<6}");
+    let frac_u: u64 = frac_padded.parse().context("amount frac")?;
+    whole_u
+        .checked_mul(TOKEN_SCALE)
+        .and_then(|v| v.checked_add(frac_u))
+        .context("amount overflow")
+}
+
+fn run_cast(args: &[&str]) -> Result<()> {
+    let out = Command::new("cast")
+        .args(args)
+        .output()
+        .context("spawn cast (is foundry cast on PATH?)")?;
+    if !out.status.success() {
+        bail!(
+            "cast {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    Ok(())
+}
+
+/// Bridge-deposit admin's Reth USDC into LightPool (mint is scripts/dev.sh), wait for credit.
+async fn ensure_admin_lp_usdc(
+    client: &IndexerHttp,
+    admin_key: &str,
+    admin_addr: &str,
+    reth_rpc: &str,
+    bridge: &BridgeStateFile,
+    need_raw: u64,
+) -> Result<()> {
+    let token = bridge
+        .tokens
+        .iter()
+        .find(|t| t.symbol.eq_ignore_ascii_case("USDC") || t.symbol.eq_ignore_ascii_case("USDT"))
+        .or_else(|| bridge.tokens.first())
+        .context("eth-bridge.json has no tokens")?;
+    let usdc_evm = token.evm.trim();
+    let lp = token.lp.trim();
+    let evm_bridge = bridge.evm_bridge.trim();
+    let admin = admin_addr.trim();
+    let key = admin_key.trim();
+
+    let have = client.lp_available_raw(admin, lp).await.unwrap_or(0);
+    if have >= need_raw {
+        tracing::info!(have, need_raw, "admin already has enough LP USDC");
+        return Ok(());
+    }
+    let deficit = need_raw.saturating_sub(have);
+    tracing::info!(
+        have,
+        need_raw,
+        deficit,
+        usdc_evm,
+        evm_bridge,
+        "admin LP USDC short — bridge deposit from Reth (mint via scripts/dev.sh)"
+    );
+
+    run_cast(&[
+        "send",
+        usdc_evm,
+        "approve(address,uint256)",
+        evm_bridge,
+        &deficit.to_string(),
+        "--rpc-url",
+        reth_rpc,
+        "--private-key",
+        key,
+    ])
+    .context("reth approve bridge")?;
+
+    run_cast(&[
+        "send",
+        evm_bridge,
+        "deposit(address,uint64,address)",
+        usdc_evm,
+        &deficit.to_string(),
+        admin,
+        "--rpc-url",
+        reth_rpc,
+        "--private-key",
+        key,
+    ])
+    .with_context(|| {
+        format!(
+            "reth bridge deposit failed (need {deficit} raw USDC on Reth for admin; \
+             mint via scripts/dev.sh ADMIN_RETH_USDC_WHOLE)"
+        )
+    })?;
+
+    let target = have.saturating_add(deficit);
+    for i in 1..=60 {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let now = client.lp_available_raw(admin, lp).await.unwrap_or(0);
+        if now >= target {
+            tracing::info!(now, elapsed_secs = i * 2, "admin LP USDC credited");
+            return Ok(());
+        }
+        if i % 5 == 0 {
+            tracing::info!(now, target, attempt = i, "waiting for bridge credit…");
+        }
+    }
+    bail!("timed out waiting for admin LP USDC after bridge deposit (need {target})");
+}
+
 async fn fund_workers(
     client: &IndexerHttp,
     admin: &Signer,
+    admin_key: &str,
     workers: Arc<Vec<Signer>>,
     usdc: &str,
     paper_market: &str,
     amount_usdc: u64,
     concurrency: usize,
+    reth_rpc: &str,
+    bridge: &BridgeStateFile,
 ) -> Result<()> {
     let amount = amount_usdc
         .checked_mul(TOKEN_SCALE)
@@ -387,7 +582,26 @@ async fn fund_workers(
     let usdc_addr = parse_token_contract(usdc).map_err(|e| anyhow::anyhow!("usdc: {e}"))?;
     let paper = parse_token_contract(paper_market).map_err(|e| anyhow::anyhow!("paper: {e}"))?;
     let admin_addr = admin.address();
+    let admin_addr_s = admin_addr.to_string();
     let t0 = Instant::now();
+
+    let n_fund = workers
+        .iter()
+        .filter(|w| w.address() != admin_addr)
+        .count() as u64;
+    let need_raw = amount
+        .checked_mul(n_fund)
+        .context("total fund overflow")?;
+    ensure_admin_lp_usdc(
+        client,
+        admin_key,
+        &admin_addr_s,
+        reth_rpc,
+        bridge,
+        need_raw,
+    )
+    .await
+    .context("admin Reth→LP USDC")?;
 
     let mut transfer_batches: Vec<SignedTransaction> = Vec::new();
     let mut batch = TransactionBuilder::new()
@@ -992,6 +1206,12 @@ async fn main() -> Result<()> {
                 .with_context(|| format!("read bootstrap {}", bootstrap_path.display()))?,
         )
         .context("parse bootstrap.json")?;
+        let bridge_path = resolve_path(&args.bridge_state_path);
+        let bridge: BridgeStateFile = serde_json::from_str(
+            &std::fs::read_to_string(&bridge_path)
+                .with_context(|| format!("read bridge state {}", bridge_path.display()))?,
+        )
+        .context("parse eth-bridge.json")?;
         let usdc = bootstrap.usdc.trim();
         if usdc.is_empty() {
             bail!("bootstrap.json missing usdc");
@@ -1005,16 +1225,20 @@ async fn main() -> Result<()> {
             accounts = args.accounts,
             fund_usdc = args.fund_usdc,
             fund_concurrency = args.fund_concurrency,
-            "funding worker paper Available"
+            reth_rpc = %args.reth_rpc,
+            "funding: admin Reth→LP deposit → LP transfer → paper deposit"
         );
         fund_workers(
             &client,
             &admin,
+            &args.admin_key,
             Arc::clone(&workers),
             usdc,
             paper,
             args.fund_usdc,
             args.fund_concurrency.max(1) as usize,
+            &args.reth_rpc,
+            &bridge,
         )
         .await
         .context("fund workers")?;

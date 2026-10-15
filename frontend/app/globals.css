@@ -160,6 +160,38 @@ button {
   user-select: all;
 }
 
+.wallet-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wallet-addr {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.connect-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.75rem;
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.connect-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.connect-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .instrument-header {
   display: flex;
   align-items: center;
@@ -488,6 +520,113 @@ button {
   background: var(--buy);
   color: #ffffff;
   font-weight: 600;
+}
+
+.ticket-fund {
+  margin: 10px 0 0;
+}
+
+.fund-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.fund-actions button {
+  width: 100%;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: var(--buy);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.fund-actions .fund-withdraw {
+  background: var(--sell);
+}
+
+.fund-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.fund-status {
+  margin: 0.65rem 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.fund-status.error {
+  color: var(--sell);
+}
+
+.fund-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.fund-dialog {
+  width: min(380px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  padding: 1rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+.fund-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.fund-dialog-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.fund-dialog-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fund-dialog-hint {
+  margin: 0.5rem 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.fund-dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.fund-dialog-actions button {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 0.65rem 0.5rem;
+  color: var(--text);
+}
+
+.fund-dialog-confirm {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff !important;
 }
 
 .bottom-tabs {
@@ -1086,10 +1225,51 @@ button {
   font-size: 12px;
 }
 
-.house-stack {
+.house-shell {
+  height: 100vh;
+  max-height: 100vh;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: var(--shell-pad);
+  padding-bottom: 56px;
+  background: var(--bg);
+}
+
+.house-shell .topbar {
+  flex: 0 0 auto;
+  height: var(--topbar-h);
+  margin-bottom: var(--shell-gap);
+}
+
+.house-shell .house-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: var(--shell-gap);
+}
+
+.house-shell .house-main > .banner {
+  flex: 0 0 auto;
+}
+
+.house-stack {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  /* Four equal rows: stats, positions, LP/debt, queue — fit viewport. */
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: var(--shell-gap);
+  align-items: stretch;
+  box-sizing: border-box;
 }
 
 .house-grid {
@@ -1104,20 +1284,36 @@ button {
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: var(--shell-gap);
   align-items: stretch;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .house-queue-lp-grid {
+  grid-row: span 2;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--shell-gap);
   align-items: stretch;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
-/* Shared compact gray-body height for left stats + right chart/track. */
+/* Charts / track fill remaining card height (no fixed 200px). */
 .house-metric-chart-card .house-oi-curve,
 .house-row-grid .house-oi-chart-card .house-oi-curve,
 .house-queue-debt-card .house-oi-curve {
-  height: 200px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 
 .house-metric-head-left {
@@ -1157,23 +1353,38 @@ button {
 }
 
 @media (max-width: 1100px) {
+  .house-shell .house-main {
+    overflow: auto;
+  }
+
+  .house-stack {
+    height: auto;
+    min-height: 100%;
+    grid-template-rows: none;
+  }
+
   .house-row-grid,
   .house-queue-lp-grid {
     grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .house-queue-lp-grid {
+    grid-row: auto;
+    grid-template-rows: none;
   }
 
   .house-metric-chart-card .house-oi-curve,
   .house-row-grid .house-oi-chart-card .house-oi-curve,
-  .house-queue-debt-card .house-oi-curve {
-    height: 220px;
+  .house-queue-debt-card .house-oi-curve,
+  .house-queue-track-box {
+    flex: none;
+    height: 180px;
+    min-height: 180px;
   }
 
   .house-card > .ticket-stats {
-    min-height: 220px;
-  }
-
-  .house-queue-track-box {
-    height: 220px;
+    min-height: 0;
   }
 }
 
@@ -1182,7 +1393,8 @@ button {
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
+  flex: 0 0 auto;
 }
 
 .house-oi-chart-head h2 {
@@ -1229,16 +1441,16 @@ button {
 .house-queue-placement-wrap {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   min-height: 0;
-}
-
-.house-queue-debt-card .house-oi-curve {
-  height: 200px;
+  height: 100%;
 }
 
 .house-queue-track-box {
   width: 100%;
-  height: 200px;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -1298,14 +1510,13 @@ button {
 
 .house-oi-curve {
   width: 100%;
-  height: 200px;
+  min-height: 0;
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   overflow: hidden;
 }
 
-.house-shell,
 .paper-shell-with-activity,
 .app-shell-with-activity {
   padding-bottom: 56px;
@@ -1605,19 +1816,30 @@ button {
 .house-card {
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  min-width: 0;
   height: 100%;
+  overflow: hidden;
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 14px;
+  padding: 10px 12px;
 }
 
 .house-card > .ticket-stats {
   margin: 0;
-  /* Match right chart/track gray height when left content is shorter. */
-  min-height: 200px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
   box-sizing: border-box;
+}
+
+.house-metric-chart-card,
+.house-oi-chart-card,
+.house-queue-debt-card,
+.house-queue-wide-card {
+  min-height: 0;
 }
 
 .house-oi-table {
@@ -1659,7 +1881,8 @@ button {
 }
 
 .house-card h2 {
-  margin: 0 0 10px;
+  margin: 0 0 8px;
+  flex: 0 0 auto;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-muted);

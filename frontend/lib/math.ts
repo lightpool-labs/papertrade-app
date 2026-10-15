@@ -54,11 +54,12 @@ export function formatAxisUsd(value: number): string {
   const a = Math.abs(value);
   if (a >= 1_000_000) {
     const n = a / 1_000_000;
-    return `${sign}$${n >= 10 ? n.toFixed(0) : n.toFixed(1)}M`;
+    // Extra digit when near $1M so tight bands are not all "$1.0M".
+    return `${sign}$${n >= 10 ? n.toFixed(0) : n.toFixed(2)}M`;
   }
   if (a >= 1_000) {
     const n = a / 1_000;
-    return `${sign}$${n >= 10 ? n.toFixed(0) : n.toFixed(1)}K`;
+    return `${sign}$${n >= 100 ? n.toFixed(0) : n.toFixed(1)}K`;
   }
   if (a >= 10) return `${sign}$${a.toFixed(0)}`;
   if (a === 0) return "$0";

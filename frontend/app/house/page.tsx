@@ -21,7 +21,7 @@ import {
 } from "@/components/HouseOiCurve";
 import { HouseQueuePlacement } from "@/components/HouseQueuePlacement";
 import { TopBar } from "@/components/TopBar";
-import { WalletProvider, useWallet } from "@/components/WalletProvider";
+import { useWallet } from "@/components/WalletProvider";
 import {
   getHouse,
   getHouseDebtHistory,
@@ -187,16 +187,29 @@ function HouseBody() {
           // keep seed from applyHouse
         }
         try {
+          // Full 1h window (~1 tick/sec → up to 3600). limit:600 only kept ~10m.
           const houseHist = await getHouseHistory(market, {
             fromMs: Date.now() - HOUSE_METRIC_WINDOW_MS,
-            limit: 600,
+            limit: 3600,
           });
           const points = (houseHist.ticks ?? [])
             .map((tick) => {
-              const house_funds = parseAmount(tick.house_funds);
-              const lp_balance = parseAmount(tick.lp_balance);
-              const open_house_pnl = parseAmount(tick.open_house_pnl);
-              const queue_debt = parseAmount(tick.queue_debt);
+              const house_funds =
+                Number.isFinite(tick.house_funds_raw)
+                  ? tick.house_funds_raw / 1_000_000
+                  : parseAmount(tick.house_funds);
+              const lp_balance =
+                Number.isFinite(tick.lp_balance_raw)
+                  ? tick.lp_balance_raw / 1_000_000
+                  : parseAmount(tick.lp_balance);
+              const open_house_pnl =
+                Number.isFinite(tick.open_house_pnl_raw)
+                  ? tick.open_house_pnl_raw / 1_000_000
+                  : parseAmount(tick.open_house_pnl);
+              const queue_debt =
+                Number.isFinite(tick.queue_debt_raw)
+                  ? tick.queue_debt_raw / 1_000_000
+                  : parseAmount(tick.queue_debt);
               const t = Number(tick.t);
               if (
                 !Number.isFinite(house_funds) ||
@@ -226,7 +239,7 @@ function HouseBody() {
           try {
             const debtHist = await getHouseDebtHistory(market, {
               fromMs: Date.now() - HOUSE_DEBT_WINDOW_MS,
-              limit: 600,
+              limit: 3600,
             });
             const points = (debtHist.ticks ?? [])
               .map((tick) => {
@@ -367,7 +380,7 @@ function HouseBody() {
   const liveMetricValue = liveMetric ? liveMetric[metric] : null;
 
   return (
-    <div className="stub-shell house-shell">
+    <div className="house-shell">
       <TopBar />
       <main className="house-main">
         {error ? <div className="banner error">{error}</div> : null}
@@ -608,9 +621,5 @@ function HouseBody() {
 }
 
 export default function HousePage() {
-  return (
-    <WalletProvider>
-      <HouseBody />
-    </WalletProvider>
-  );
+  return <HouseBody />;
 }

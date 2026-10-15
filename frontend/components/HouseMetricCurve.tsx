@@ -83,7 +83,8 @@ export function HouseMetricCurve({
       seedKeyRef.current = "";
       return;
     }
-    const key = `${seed[0].t}:${seed[seed.length - 1].t}:${seed.length}`;
+    const last = seed[seed.length - 1];
+    const key = `${seed[0].t}:${last.t}:${seed.length}:${last.house_funds}:${last.lp_balance}:${last.open_house_pnl}:${last.queue_debt}`;
     if (seedKeyRef.current === key) return;
     seedKeyRef.current = key;
     pointsRef.current = dedupeByTime(seed);
@@ -91,7 +92,17 @@ export function HouseMetricCurve({
 
   useEffect(() => {
     liveRef.current = live;
-  }, [live]);
+    if (!live) return;
+    const pts = pointsRef.current;
+    const last = pts[pts.length - 1];
+    if (last && last.t === live.t) {
+      pts[pts.length - 1] = live;
+    } else if (!last || live.t > last.t) {
+      pts.push(live);
+    }
+    const cutoff = Date.now() - windowMs - 60_000;
+    while (pts.length > 1 && pts[0].t < cutoff) pts.shift();
+  }, [live, windowMs]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -192,13 +203,15 @@ export function HouseMetricCurve({
         lo = 0;
         hi = 1;
       }
-      if (lo === hi) {
-        lo -= 1;
-        hi += 1;
-      }
-      const pad = (hi - lo) * 0.08;
-      lo -= pad;
-      hi += pad;
+      const mid = (lo + hi) / 2;
+      // Floor span so micro-noise after hours does not fill the pane; still
+      // expands when house funds actually move (e.g. ≥0.5% of mid or $1).
+      const minSpan = Math.max(Math.abs(mid) * 0.005, 1);
+      let span = Math.max(hi - lo, minSpan);
+      const pad = span * 0.08;
+      span += pad * 2;
+      lo = mid - span / 2;
+      hi = mid + span / 2;
 
       const plotW = W - PAD.left - PAD.right;
       const plotH = H - PAD.top - PAD.bottom;

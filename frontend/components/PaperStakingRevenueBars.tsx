@@ -12,11 +12,8 @@ const TIME_LABEL_MS = 10 * 60_000;
 const PAD = { top: 12, right: 44, bottom: 22, left: 8 };
 const UP = "#0ecb81";
 const UP_DIM = "rgba(14, 203, 129, 0.4)";
-const DOWN = "#f6465d";
-const DOWN_DIM = "rgba(246, 70, 93, 0.4)";
 const GRID = "rgba(139, 147, 161, 0.14)";
 const MUTED = "#8b93a1";
-const ZERO = "rgba(139, 147, 161, 0.35)";
 
 type Props = {
   seed?: RevenuePoint[] | null;
@@ -64,7 +61,7 @@ function bucketLevels(
   return buckets;
 }
 
-/** Per-bucket delta vs previous level (first uses pre-window carry). */
+/** Per-bucket inflow vs previous level (negative clipped — revenue only increases). */
 function toDeltas(
   levels: { t: number; level: number; set: boolean }[],
   preLevel: number | null,
@@ -75,8 +72,8 @@ function toDeltas(
       if (b.set) prev = b.level;
       return { t: b.t, v: 0 };
     }
-    const d = b.level - prev;
-    prev = b.level;
+    const d = Math.max(0, b.level - prev);
+    prev = Math.max(prev, b.level);
     return { t: b.t, v: d };
   });
 }
@@ -192,24 +189,16 @@ export function PaperStakingRevenueBars({
       const levels = bucketLevels(allPts, t0, t1, BUCKET_MS);
       const series = toDeltas(levels, preLevel);
 
-      let lo = 0;
       let hi = 0;
       let any = false;
       for (const p of series) {
-        if (!Number.isFinite(p.v) || p.v === 0) continue;
+        if (!Number.isFinite(p.v) || p.v <= 0) continue;
         any = true;
-        lo = Math.min(lo, p.v);
         hi = Math.max(hi, p.v);
       }
-      if (!any) {
-        lo = -1;
-        hi = 1;
-      } else if (lo === hi) {
-        lo -= 1;
-        hi += 1;
-      }
-      const pad = (hi - lo) * 0.08 || 0.1;
-      lo -= pad;
+      if (!any) hi = 1;
+      const lo = 0;
+      const pad = hi * 0.08 || 0.1;
       hi += pad;
 
       const plotW = W - PAD.left - PAD.right;
@@ -236,14 +225,6 @@ export function PaperStakingRevenueBars({
         ctx.fillText(formatAxisUsd(v), PAD.left + plotW + 4, y);
       }
 
-      if (lo < 0 && hi > 0) {
-        ctx.strokeStyle = ZERO;
-        ctx.beginPath();
-        ctx.moveTo(PAD.left, yOf(0));
-        ctx.lineTo(PAD.left + plotW, yOf(0));
-        ctx.stroke();
-      }
-
       ctx.save();
       ctx.beginPath();
       ctx.rect(PAD.left, PAD.top, plotW, plotH);
@@ -252,14 +233,13 @@ export function PaperStakingRevenueBars({
       const baseY = yOf(0);
       for (let i = 0; i < n; i++) {
         const v = series[i].v;
-        if (!Number.isFinite(v) || v === 0) continue;
+        if (!Number.isFinite(v) || v <= 0) continue;
         const x = xOf(i);
         const y = yOf(v);
         const top = Math.min(y, baseY);
         const h = Math.max(1, Math.abs(baseY - y));
         const last = i === n - 1;
-        if (v > 0) ctx.fillStyle = last ? UP : UP_DIM;
-        else ctx.fillStyle = last ? DOWN : DOWN_DIM;
+        ctx.fillStyle = last ? UP : UP_DIM;
         ctx.fillRect(x, top, barW, h);
       }
       ctx.restore();

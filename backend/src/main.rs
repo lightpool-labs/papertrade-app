@@ -17,6 +17,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+mod bridge;
 mod config;
 mod error;
 mod hyperliquid;
@@ -24,13 +25,23 @@ mod indexer;
 mod markets;
 mod paper_tx;
 mod state;
+mod user_tx;
 mod ws_bars;
 
+use bridge::get_bridge;
 use config::Config;
 use error::AppResult;
 use hyperliquid::{BarsResponse, MarkResponse};
 use markets::{MarketRegistry, MarketView};
 use state::AppState;
+use paper_tx::{
+    prepare_claim_paper, prepare_close_paper, prepare_open_paper, prepare_stake_paper,
+    prepare_unstake_paper,
+};
+use user_tx::{
+    prepare_agent, prepare_bridge_withdraw, prepare_paper_deposit, prepare_paper_withdraw,
+    submit_signed_tx,
+};
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -192,11 +203,17 @@ async fn main() {
                 .route("/paper", get(get_paper))
                 .route("/paper/activity", get(get_paper_activity))
                 .route("/paper/stake/history", get(get_paper_stake_history))
-                .route("/paper/open", post(open_paper))
-                .route("/paper/close", post(close_paper))
-                .route("/paper/stake", post(stake_paper))
-                .route("/paper/unstake", post(unstake_paper))
-                .route("/paper/claim", post(claim_paper))
+                .route("/agent/prepare", post(prepare_agent))
+                .route("/paper/open/prepare", post(prepare_open_paper))
+                .route("/paper/close/prepare", post(prepare_close_paper))
+                .route("/paper/stake/prepare", post(prepare_stake_paper))
+                .route("/paper/unstake/prepare", post(prepare_unstake_paper))
+                .route("/paper/claim/prepare", post(prepare_claim_paper))
+                .route("/bridge", get(get_bridge))
+                .route("/paper/deposit/prepare", post(prepare_paper_deposit))
+                .route("/paper/withdraw/prepare", post(prepare_paper_withdraw))
+                .route("/withdraw/prepare", post(prepare_bridge_withdraw))
+                .route("/tx/sign/submit", post(submit_signed_tx))
                 .route("/tx/submit", post(submit_tx))
                 .route("/ws", get(ws_upgrade)),
         )
@@ -526,41 +543,6 @@ async fn get_paper_stake_history(
         .get_paper_stake_history(market.trim(), query.from_ms, query.limit)
         .await?;
     Ok(Json(body))
-}
-
-async fn open_paper(
-    State(state): State<AppState>,
-    Json(body): Json<paper_tx::OpenPaperRequest>,
-) -> AppResult<Json<paper_tx::OpenPaperResponse>> {
-    Ok(Json(paper_tx::open_paper(&state, body).await?))
-}
-
-async fn close_paper(
-    State(state): State<AppState>,
-    Json(body): Json<paper_tx::ClosePaperRequest>,
-) -> AppResult<Json<paper_tx::ClosePaperResponse>> {
-    Ok(Json(paper_tx::close_paper(&state, body).await?))
-}
-
-async fn stake_paper(
-    State(state): State<AppState>,
-    Json(body): Json<paper_tx::StakePaperRequest>,
-) -> AppResult<Json<paper_tx::StakePaperResponse>> {
-    Ok(Json(paper_tx::stake_paper(&state, body).await?))
-}
-
-async fn unstake_paper(
-    State(state): State<AppState>,
-    Json(body): Json<paper_tx::UnstakePaperRequest>,
-) -> AppResult<Json<paper_tx::UnstakePaperResponse>> {
-    Ok(Json(paper_tx::unstake_paper(&state, body).await?))
-}
-
-async fn claim_paper(
-    State(state): State<AppState>,
-    Json(body): Json<paper_tx::ClaimPaperRequest>,
-) -> AppResult<Json<paper_tx::ClaimPaperResponse>> {
-    Ok(Json(paper_tx::claim_paper(&state, body).await?))
 }
 
 async fn submit_tx(

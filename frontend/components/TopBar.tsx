@@ -13,7 +13,7 @@ const LINKS = [
 
 export function TopBar() {
   const pathname = usePathname();
-  const { address } = useWallet();
+  const { address, busy, error, connect, disconnect, reauth } = useWallet();
 
   return (
     <header className="topbar">
@@ -37,9 +37,46 @@ export function TopBar() {
         })}
       </nav>
       <div className="topbar-spacer" />
-      <span className="account-chip" title={address}>
-        {shortAddress(address)}
-      </span>
+      <div className="wallet-actions">
+        {address ? (
+          <>
+            <span className="wallet-addr" title={address}>
+              {shortAddress(address)}
+            </span>
+            <button
+              type="button"
+              className="connect-btn"
+              disabled={busy}
+              title="New agent + MetaMask set_agent"
+              onClick={() => {
+                void reauth().catch(() => undefined);
+              }}
+            >
+              {busy ? "Signing…" : "Reauth"}
+            </button>
+            <button
+              type="button"
+              className="connect-btn"
+              disabled={busy}
+              onClick={disconnect}
+            >
+              Disconnect
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="connect-btn"
+            disabled={busy}
+            title={error ?? "Connect MetaMask + authorize agent"}
+            onClick={() => {
+              void connect().catch(() => undefined);
+            }}
+          >
+            {busy ? "Connecting…" : "Connect"}
+          </button>
+        )}
+      </div>
     </header>
   );
 }

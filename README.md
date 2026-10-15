@@ -25,14 +25,18 @@ layout). `./scripts/dev.sh start` uses `lightpool-node/bin/lightpool` when prese
 
 ## Step 3
 
-Start the local stack (node + indexer + oracle + paper-bootstrap + backend + frontend).
-No Reth or bridge.
+Start the local stack (Reth + USDC bridge + node + indexer + oracle + bootstrap + app):
 
 ```bash
 ./scripts/dev.sh start
 ```
 
-Open http://127.0.0.1:3000/trade/btc` 
+At the end it prints MetaMask accounts, Reth RPC / chain id, bridge, and USDC ERC20.
+Import Anvil #1, add the Reth network + USDC token, open http://127.0.0.1:3000/trade/btc → Connect → Deposit.
+
+`hold_opens` still funds on LightPool only (`--fund-usdc`); do not mint 1000 accounts on Reth.
+
+If you previously started without bridge, run `./scripts/dev.sh stop && ./scripts/dev.sh clean` once before start. 
 
 Stop:
 

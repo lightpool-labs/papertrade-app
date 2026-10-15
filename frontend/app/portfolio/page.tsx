@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { TopBar } from "@/components/TopBar";
 import { PositionsPanel } from "@/components/PositionsPanel";
 import { AccountStrip } from "@/components/AccountStrip";
-import { WalletProvider, useWallet } from "@/components/WalletProvider";
+import { useWallet } from "@/components/WalletProvider";
 import {
   getAccount,
   listHistory,
@@ -30,15 +30,24 @@ function PortfolioBody() {
   const paperMarket = markets[0]?.paper_market;
 
   const refresh = useCallback(async () => {
+    const user = address?.trim() ?? "";
+    if (!user) {
+      setAccount(null);
+      setOpen([]);
+      setHistory([]);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const [acct, pos, hist] = await Promise.all([
         paperMarket
-          ? getAccount(address, paperMarket)
+          ? getAccount(user, paperMarket)
           : Promise.resolve(null as PaperAccount | null),
-        listPositions(address, { market: paperMarket, status: "all" }),
-        listHistory(address, paperMarket),
+        listPositions(user, { market: paperMarket, status: "all" }),
+        listHistory(user, paperMarket),
       ]);
       setAccount(acct);
       setOpen(pos.open ?? []);
@@ -124,9 +133,5 @@ function PortfolioBody() {
 }
 
 export default function PortfolioPage() {
-  return (
-    <WalletProvider>
-      <PortfolioBody />
-    </WalletProvider>
-  );
+  return <PortfolioBody />;
 }

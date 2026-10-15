@@ -9,7 +9,7 @@ import { CandleChart } from "@/components/CandleChart";
 import { MarkPriceCurve } from "@/components/MarkPriceCurve";
 import { PaperTicket } from "@/components/PaperTicket";
 import { PositionsPanel } from "@/components/PositionsPanel";
-import { WalletProvider, useWallet } from "@/components/WalletProvider";
+import { useWallet } from "@/components/WalletProvider";
 import {
   getAccount,
   getMarkHistory,
@@ -128,13 +128,22 @@ function TradeBody() {
       const wantOpens = opts?.opens !== false;
       const refreshOpens =
         wantOpens && Date.now() >= suppressOpensUntilRef.current;
+      const user = address?.trim() ?? "";
+      if (!user) {
+        setAccount(null);
+        setOpenPositions([]);
+        setHistory([]);
+        setPosError(null);
+        if (!silent) setPosLoading(false);
+        return;
+      }
       if (!silent) setPosLoading(true);
       setPosError(null);
       const market = selected?.paper_market?.trim() || undefined;
 
       if (market) {
         try {
-          setAccount(await getAccount(address, market));
+          setAccount(await getAccount(user, market));
         } catch {
           setAccount(null);
         }
@@ -145,13 +154,13 @@ function TradeBody() {
       try {
         if (refreshOpens) {
           const [pos, hist] = await Promise.all([
-            listPositions(address, { market, status: "open" }),
-            listHistory(address, market),
+            listPositions(user, { market, status: "open" }),
+            listHistory(user, market),
           ]);
           applyOpenSnapshot(pos.open ?? []);
           setHistory(hist.history ?? []);
         } else {
-          const hist = await listHistory(address, market);
+          const hist = await listHistory(user, market);
           setHistory(hist.history ?? []);
         }
       } catch (err) {
@@ -386,9 +395,5 @@ function TradeBody() {
 }
 
 export function TradeShell() {
-  return (
-    <WalletProvider>
-      <TradeBody />
-    </WalletProvider>
-  );
+  return <TradeBody />;
 }

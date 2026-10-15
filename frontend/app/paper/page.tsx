@@ -19,14 +19,11 @@ import {
   type RevenuePoint,
 } from "@/components/PaperStakingRevenueBars";
 import { TopBar } from "@/components/TopBar";
-import { WalletProvider, useWallet } from "@/components/WalletProvider";
+import { useWallet } from "@/components/WalletProvider";
 import {
-  claimPaper,
   getPaper,
   getPaperStakeHistory,
   listMarkets,
-  stakePaper,
-  unstakePaper,
   type PaperStake,
 } from "@/lib/api";
 import { formatAmount, formatUsd, parseAmount } from "@/lib/math";
@@ -85,7 +82,12 @@ function historyEqual(
 }
 
 function PaperBody() {
-  const { address } = useWallet();
+  const {
+    address,
+    claimPaper,
+    stakePaper,
+    unstakePaper,
+  } = useWallet();
   const [paperMarket, setPaperMarket] = useState("");
   const [stake, setStake] = useState<PaperStake | null>(null);
   const [loading, setLoading] = useState(false);
@@ -102,11 +104,13 @@ function PaperBody() {
 
   const applyStake = useCallback((next: PaperStake, tsMs = Date.now()) => {
     setStake((prev) => (prev && stakeUiEqual(prev, next) ? prev : next));
+    const lifetime = parseAmount(next.total_staker_rewards);
     const hist: PaperStakeHistoryPoint = {
       t: tsMs,
-      staking_revenue: parseAmount(next.reward_pool),
+      // Lifetime fees to stakers (monotonic); never reward_pool (drops on claim).
+      staking_revenue: lifetime,
       total_paper_supply: parseAmount(next.total_supply),
-      total_staking_reward: parseAmount(next.total_staker_rewards),
+      total_staking_reward: lifetime,
     };
     setLiveHistory((prev) => (historyEqual(prev, hist) ? prev : hist));
   }, []);
@@ -144,14 +148,15 @@ function PaperBody() {
   }, [paperMarket]);
 
   useEffect(() => {
-    if (!paperMarket.trim() || !address?.trim()) {
+    const user = address?.trim() ?? "";
+    if (!paperMarket.trim() || !user) {
       setStake(null);
       setLiveHistory(null);
       return;
     }
     setLoading(true);
     setError(null);
-    void getPaper(address, paperMarket)
+    void getPaper(user, paperMarket)
       .then((next) => {
         applyStake(next);
         setLoading(false);
@@ -161,7 +166,7 @@ function PaperBody() {
         setLoading(false);
       });
 
-    return subscribePaperStake(paperMarket, address, {
+    return subscribePaperStake(paperMarket, user, {
       onStake: (next, tick, tsMs) => {
         applyStake(next, tsMs);
         const hist: PaperStakeHistoryPoint = {
@@ -184,10 +189,22 @@ function PaperBody() {
 
   const revenueSeed = useMemo((): RevenuePoint[] | null => {
     if (historySeed == null) return null;
-    return historySeed.map((p) => ({ t: p.t, v: p.staking_revenue }));
+    // Prefer lifetime total_staking_reward; old ticks may have wrongly stored reward_pool
+    // in staking_revenue — use max of the two so the series stays non-decreasing.
+    let peak = 0;
+    return historySeed.map((p) => {
+      const raw = Math.max(p.total_staking_reward, p.staking_revenue);
+      peak = Math.max(peak, Number.isFinite(raw) ? raw : 0);
+      return { t: p.t, v: peak };
+    });
   }, [historySeed]);
 
-  const liveRevenue = liveHistory?.staking_revenue ?? null;
+  const liveRevenue = liveHistory
+    ? Math.max(
+        liveHistory.total_staking_reward,
+        liveHistory.staking_revenue,
+      )
+    : null;
 
   const revenue1hIn = useMemo(() => {
     if (revenueSeed == null) return null;
@@ -219,7 +236,7 @@ function PaperBody() {
 
   const onClaim = () => {
     if (!paperMarket) return;
-    void runAction("claim", () => claimPaper({ market: paperMarket }));
+    void runAction("claim", () => claimPaper(paperMarket));
   };
 
   const onStake = () => {
@@ -230,7 +247,7 @@ function PaperBody() {
       return;
     }
     void runAction("stake", async () => {
-      await stakePaper({ market: paperMarket, amount });
+      await stakePaper(paperMarket, amount);
       setStakeAmount("");
     });
   };
@@ -243,7 +260,7 @@ function PaperBody() {
       return;
     }
     void runAction("unstake", async () => {
-      await unstakePaper({ market: paperMarket, amount });
+      await unstakePaper(paperMarket, amount);
       setUnstakeAmount("");
     });
   };
@@ -274,8 +291,12 @@ function PaperBody() {
         {error ? <div className="paper-error">{error}</div> : null}
         {loading && !stake ? (
           <div className="bottom-empty">Loading…</div>
+        ) : !address?.trim() ? (
+          <div className="bottom-empty">Connect wallet to view PAPER stake</div>
+        ) : !paperMarket.trim() ? (
+          <div className="bottom-empty">Waiting for market config…</div>
         ) : !stake ? (
-          <div className="bottom-empty">Connect / wait for market config</div>
+          <div className="bottom-empty">Loading stake…</div>
         ) : (
           <div className="paper-layout">
             <div className="paper-row-grid paper-row-claim">
@@ -541,9 +562,5 @@ function PaperBody() {
 }
 
 export default function PaperPage() {
-  return (
-    <WalletProvider>
-      <PaperBody />
-    </WalletProvider>
-  );
+  return <PaperBody />;
 }

@@ -2229,6 +2229,7 @@ name = "papertrader-backend"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bincode",
  "compact_str",
  "dotenvy",
  "futures-util",

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Local papertrader stack: LightPool node + clob-indexer + lightpool-oracle +
-# paper bootstrap + Rust backend (cargo watch) + Next.js frontend + paper-keeper.
-# No Reth / bridge / liquidity-maker.
+# Local papertrader stack: Reth + USDC bridge + LightPool node + clob-indexer +
+# oracle + paper bootstrap + backend + frontend + paper-keeper.
+# Demo user / admin get USDC minted on Reth here; hold_opens only bridge-deposits
+# admin → LP then transfers to workers (no Reth mint in hold_opens).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,13 +11,18 @@ APP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Anvil #0 — validator / paper market admin / keeper
 MAKER_KEY="${MAKER_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
 MAKER_ADDR="${MAKER_ADDR:-0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266}"
-# Anvil #1 — default local trader (MetaMask / FE / paper deposit + PAPER_SIGNER)
+# Anvil #1 — default local trader (MetaMask / FE)
 USER_KEY="${USER_KEY:-0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d}"
 USER_ADDR="${USER_ADDR:-0x70997970C51812dc3A010C7d01b50e0d17dc79C8}"
 
 LP_RPC="${LP_RPC:-http://127.0.0.1:26300}"
+RETH_RPC="${RETH_RPC:-http://127.0.0.1:8545}"
 CLOB_HTTP="${LIGHTPOOL_CLOB_INDEX_HTTP:-http://127.0.0.1:3002}"
 APP_API="${APP_API:-http://127.0.0.1:3001/api}"
+# Whole USDC minted on Reth (6 decimals on-chain).
+USER_RETH_USDC_WHOLE="${USER_RETH_USDC_WHOLE:-1000000}"
+# Admin soak funding via hold_opens (accounts × fund-usdc); default covers large runs.
+ADMIN_RETH_USDC_WHOLE="${ADMIN_RETH_USDC_WHOLE:-100000000}"
 
 resolve_labs() {
   if [[ -n "${LABS:-}" ]]; then
@@ -42,7 +48,14 @@ STORE_PATH="$DATA/store"
 VALIDATOR_PATH="$DATA/validator.json"
 INDEXER_DATA="$DATA/indexer"
 BOOTSTRAP_STATE="$DATA/bootstrap.json"
+BRIDGE_STATE="$DATA/eth-bridge.json"
+BRIDGE_CONFIG="$DATA/bridge-config.json"
+RETH_DATADIR="$DATA/reth"
+FORGE_DIR="$DATA/forge"
 MARKETS_PATH="$APP_ROOT/data/markets.json"
+CONTRACTS="$LABS/lightpool-bridge/contracts"
+RETH_BIN="${RETH_BIN:-$LABS/lightpool-node/tools/reth/bin/reth}"
+BRIDGE_BIN="${BRIDGE_BIN:-$LABS/lightpool-bridge/target/release/lightpool-bridge}"
 
 NODE_DIR="$LABS/lightpool-node"
 LIGHTPOOL_DIR="$LABS/lightpool"
@@ -52,6 +65,7 @@ ORACLE_CONFIG="${ORACLE_CONFIG:-$DATA/oracle.config.json}"
 HL_INFO_URL="${HYPERLIQUID_INFO_URL:-https://api.hyperliquid.xyz/info}"
 HL_PROXY_FILE="${HL_PROXY_FILE:-$DATA/hl_proxy.env}"
 VENUE="$LABS/lightpool-tutorials/scripts/run-venue.sh"
+export PATH="${HOME}/.foundry/bin:${PATH:-}"
 
 if [[ -z "${LIGHTPOOL_BIN:-}" ]]; then
   if [[ -x "$LIGHTPOOL_DIR/target/release/lightpool" ]]; then
@@ -146,38 +160,24 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [start|stop|clean|status|bootstrap]
 
-  start       Node + indexer + oracle + bootstrap + backend + frontend + paper-keeper
-  stop        Stop frontend/backend/keeper/oracle/node/indexer
+  start       Reth + USDC bridge + node + indexer + oracle + bootstrap + app + keeper
+  stop        Stop app / keeper / oracle / bridge / Reth / node / indexer
   clean       Delete \$DATA (run stop first)
   status      Show PIDs
   bootstrap   Re-run paper-bootstrap only (skips if \$DATA/bootstrap.json exists)
 
 Env:
-  LABS / DATA / LIGHTPOOL_BIN / INDEXER_BIN / ORACLE_BIN / INDEXER_URL
-  ORACLE_CONFIG   default \$DATA/oracle.config.json
-  HL_PROXY / HTTPS_PROXY / HTTP_PROXY / ALL_PROXY
-                  proxy for Hyperliquid (mark feed); prompted if HL unreachable
-  CARGO_WATCH=0   use cargo run once instead of cargo watch
-  PAPER_KEEPER=0  skip paper-keeper; default starts liqd+harvest+push_fees
+  LABS / DATA / LIGHTPOOL_BIN / INDEXER_BIN / ORACLE_BIN / RETH_BIN / BRIDGE_BIN
+  USER_RETH_USDC_WHOLE    Reth mint for demo user (default 1000000)
+  ADMIN_RETH_USDC_WHOLE   Reth mint for admin / hold_opens (default 100000000)
+  CARGO_WATCH=0          cargo run once instead of cargo-watch
+  PAPER_KEEPER=0         skip paper-keeper
 
-On start, rebuilds lightpool --release if the binary is missing, lacks paper,
-or any lightpool source/Cargo.toml is newer than the binary.
+Start: Reth → node/indexer → deploy USDC+bridge → mint user+admin on Reth →
+init-bridge LP USDC → bridge daemon → paper-bootstrap → oracle/app/keeper.
 
-Creates on chain (via indexer submit):
-  tokens USDC, BTC, ETH, LPL
-  spot   BTC/USDC, ETH/USDC
-  paper  market + BTC instrument (price_market = BTC spot)
-  stake  init + register + bond/allocate Committee (no prom_*;
-         RunningCommittee fills after ~1000 blocks via epoch epilogue)
-  fund   paper deposit ~1_000_000 USDC for anvil #1 (default trader);
-         admin stays anvil #0. Override: PAPER_FUND_USDC / PAPER_FUND_KEY / USER_KEY
-
-Oracle: HL trades/allMids → ora_commit (open-mode until RunningCommittee exists);
-FE mark via indexer WS oracle. Start probes Hyperliquid and asks for a proxy
-if the API is unreachable (common without HTTPS_PROXY).
-
-Does NOT start: Reth, bridge, liquidity-maker.
-Paper-keeper (liqd / harvest / push_fees) starts by default.
+Demo: MetaMask Anvil #1, add Reth + USDC, Trade → Deposit.
+hold_opens: admin bridge-deposit → LP transfer → paper deposit (no Reth mint).
 EOF
 }
 
@@ -189,7 +189,8 @@ need_cmd() {
 }
 
 mkdirs() {
-  mkdir -p "$DATA" "$LOG_DIR" "$PID_DIR" "$INDEXER_DATA" "$STORE_PATH" "$APP_ROOT/data"
+  mkdir -p "$DATA" "$LOG_DIR" "$PID_DIR" "$INDEXER_DATA" "$STORE_PATH" \
+    "$APP_ROOT/data" "$RETH_DATADIR" "$FORGE_DIR"
 }
 
 is_running() {
@@ -336,15 +337,382 @@ ensure_cargo_watch() {
   command -v cargo-watch >/dev/null 2>&1
 }
 
+raw_amount() {
+  python3 -c "print(int('$1') * 1_000_000)"
+}
+
+parse_labeled() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import re, sys
+text = open(sys.argv[1], errors="replace").read()
+text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+label, prefix = sys.argv[2], sys.argv[3]
+match = re.search(re.escape(label) + r"\s*:?\s*(" + prefix + r"[0-9a-fA-F]{14})", text, re.I)
+if not match:
+    sys.exit(1)
+print(match.group(1))
+PY
+}
+
+prepare_forge_home() {
+  mkdir -p "$FORGE_DIR"
+  cat >"$FORGE_DIR/foundry.toml" <<EOF
+[profile.default]
+src = "${CONTRACTS}/src"
+script = "${CONTRACTS}/script"
+out = "${FORGE_DIR}/out"
+libs = ["${CONTRACTS}/lib"]
+cache_path = "${FORGE_DIR}/cache"
+broadcast = "${FORGE_DIR}/broadcast"
+solc_version = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+remappings = ["forge-std/=${CONTRACTS}/lib/forge-std/src/"]
+EOF
+}
+
+wait_reth() {
+  local i
+  echo "wait  Reth $RETH_RPC"
+  for i in $(seq 1 60); do
+    if cast chain-id --rpc-url "$RETH_RPC" >/dev/null 2>&1; then
+      echo "ok    Reth chain-id=$(cast chain-id --rpc-url "$RETH_RPC")"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Reth not ready: $RETH_RPC" >&2
+  exit 1
+}
+
+start_reth() {
+  if is_running reth; then
+    echo "skip  Reth (already running)"
+    return
+  fi
+  if cast chain-id --rpc-url "$RETH_RPC" >/dev/null 2>&1; then
+    echo "stop  Reth on :8545 so data stays in $RETH_DATADIR"
+    stop_port 8545 reth
+  fi
+  if [[ ! -x "$RETH_BIN" ]]; then
+    echo "reth not found: $RETH_BIN" >&2
+    echo "run lightpool-node/tools/reth/download.sh or set RETH_BIN" >&2
+    exit 1
+  fi
+  echo "start Reth datadir $RETH_DATADIR"
+  setsid "$RETH_BIN" node \
+    --dev \
+    --dev.block-time 1s \
+    --datadir "$RETH_DATADIR" \
+    --http \
+    --http.addr 127.0.0.1 \
+    --http.port 8545 \
+    --http.api eth,net,web3,txpool,debug,trace \
+    --http.corsdomain '*' \
+    --ws \
+    --ws.addr 127.0.0.1 \
+    --ws.port 8546 \
+    --ws.api eth,net,web3,txpool,debug,trace \
+    --ws.origins '*' \
+    --authrpc.addr 127.0.0.1 \
+    --authrpc.port 8551 \
+    --engine.persistence-threshold 0 \
+    --engine.memory-block-buffer-target 0 \
+    >"$LOG_DIR/reth.log" 2>&1 < /dev/null &
+  echo $! >"$PID_DIR/reth.pid"
+  wait_reth
+}
+
+stop_reth() {
+  echo "=== stop Reth ==="
+  stop_pid reth
+  stop_port 8545 reth
+}
+
+stop_bridge() {
+  echo "=== stop bridge ==="
+  stop_pid bridge
+}
+
+lp() {
+  "$LIGHTPOOL_BIN" --rpc-url "$LP_RPC" --wallet-path "$WALLET_PATH" "$@"
+}
+
+validator_stake() {
+  local body stake
+  body="$(curl -fsS -m 10 -X POST "$LP_RPC" -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"getCommitteeInfo","params":[]}' 2>/dev/null || true)"
+  stake="$(python3 -c 'import json,sys
+raw=sys.stdin.read().strip()
+if not raw:
+    print("100"); raise SystemExit
+try:
+    members=(json.loads(raw).get("result") or {}).get("members") or []
+except Exception:
+    print("100"); raise SystemExit
+want="'"$MAKER_ADDR"'".lower()
+for member in members:
+    if str(member.get("owner") or "").lower()==want and member.get("stake") is not None:
+        print(member["stake"]); raise SystemExit
+if members and members[0].get("stake") is not None:
+    print(members[0]["stake"]); raise SystemExit
+print("100")' <<<"$body")"
+  printf '%s\n' "$stake"
+}
+
+fund_eth() {
+  local to="$1" amount="$2"
+  cast send "$to" --value "$amount" --rpc-url "$RETH_RPC" --private-key "$MAKER_KEY" >/dev/null \
+    || echo "warning: could not send $amount ETH to $to"
+}
+
+mint_erc20() {
+  local token="$1" to="$2" whole="$3"
+  local raw
+  raw="$(raw_amount "$whole")"
+  cast send "$token" "mint(address,uint256)" "$to" "$raw" \
+    --rpc-url "$RETH_RPC" --private-key "$MAKER_KEY" >/dev/null
+}
+
+deploy_usdc_and_bridge() {
+  local log="$LOG_DIR/forge-usdc.log" stake
+  if [[ ! -f "$CONTRACTS/lib/forge-std/src/Test.sol" ]]; then
+    echo "forge-std missing under $CONTRACTS/lib. Run: forge install foundry-rs/forge-std" >&2
+    echo "(from $CONTRACTS)" >&2
+    exit 1
+  fi
+  stake="$(validator_stake)"
+  echo "deploy USDC (MockUSDT) + EVM Bridge (validator stake $stake)"
+  (
+    cd "$CONTRACTS"
+    VALIDATOR_ETH="$MAKER_ADDR" \
+    VALIDATOR_STAKE="$stake" \
+    USER_ETH="$USER_ADDR" \
+    forge script script/DeployLocal.s.sol:DeployLocal \
+      --rpc-url "$RETH_RPC" \
+      --broadcast \
+      --private-key "$MAKER_KEY" \
+      -vv \
+      --root "$CONTRACTS" \
+      --config-path "$FORGE_DIR/foundry.toml" \
+      --cache-path "$FORGE_DIR/cache" \
+      -o "$FORGE_DIR/out"
+  ) | tee "$log"
+  USDC_EVM="$(python3 -c 'import re,sys; t=open(sys.argv[1],errors="replace").read(); m=re.search(r"USDT\s+(0x[0-9a-fA-F]{40})", t); print(m.group(1) if m else "")' "$log")"
+  EVM_BRIDGE="$(python3 -c 'import re,sys; t=open(sys.argv[1],errors="replace").read(); m=re.search(r"BRIDGE\s+(0x[0-9a-fA-F]{40})", t); print(m.group(1) if m else "")' "$log")"
+  if [[ -z "$USDC_EVM" || -z "$EVM_BRIDGE" ]]; then
+    echo "failed to parse USDT / BRIDGE from $log" >&2
+    exit 1
+  fi
+  echo "ok    USDC(EVM) $USDC_EVM"
+  echo "ok    EVM Bridge $EVM_BRIDGE"
+}
+
+init_lp_usdc() {
+  local log="$LOG_DIR/init-usdc.log" lp inbound
+  echo "create LightPool USDC via init-bridge (foreign $USDC_EVM)"
+  lp init-bridge \
+    --foreign-chain-id "$EVM_CHAIN_ID" \
+    --foreign-token "$USDC_EVM" \
+    --name "USD Coin" \
+    --symbol "USDC" >"$log" 2>&1 || true
+  cat "$log"
+  if grep -Eiq 'initialization failed|Failed to submit|Failed to connect|Wallet not found' "$log"; then
+    echo "init-bridge failed; see $log" >&2
+    exit 1
+  fi
+  lp="$(parse_labeled "$log" "LP token" "0x02" || true)"
+  inbound="$(parse_labeled "$log" "Inbound bridge contract" "0x06" || true)"
+  if [[ -z "$lp" || -z "$inbound" ]]; then
+    echo "failed to parse LP USDC / inbound from $log" >&2
+    exit 1
+  fi
+  LP_USDC="$lp"
+  IN_USDC="$inbound"
+  echo "ok    USDC lp=$LP_USDC inbound=$IN_USDC"
+}
+
+write_bridge_state() {
+  python3 - "$BRIDGE_STATE" "$BRIDGE_CONFIG" "$WALLET_PATH" "$LP_RPC" "$RETH_RPC" \
+    "$EVM_CHAIN_ID" "$EVM_BRIDGE" "$USDC_EVM" "$LP_USDC" "$IN_USDC" \
+    "$MAKER_ADDR" "$USER_ADDR" <<'PY'
+import json, sys
+(
+    state_path, config_path, wallet, lp_rpc, reth_rpc,
+    chain_id, evm_bridge, usdc_evm, lp_usdc, inbound,
+    maker, user,
+) = sys.argv[1:]
+state = {
+    "evm_chain_id": int(chain_id),
+    "evm_bridge": evm_bridge,
+    "maker": maker,
+    "user": user,
+    "tokens": [
+        {
+            "symbol": "USDC",
+            "name": "USD Coin",
+            "evm": usdc_evm,
+            "lp": lp_usdc,
+            "inbound": inbound,
+        }
+    ],
+}
+with open(state_path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle, indent=2)
+    handle.write("\n")
+config = {
+    "wallet_path": wallet,
+    "lightpool_rpc_url": lp_rpc,
+    "cast_bin": "cast",
+    "local": {"rpc_url": lp_rpc, "chain_id": 1},
+    "routes": [
+        {
+            "id": "reth-usdc",
+            "enabled": True,
+            "local_inbound": {
+                "bridge_contract": inbound,
+                "lp_token": lp_usdc,
+            },
+            "foreign": {
+                "kind": "evm",
+                "rpc_url": reth_rpc,
+                "chain_id": int(chain_id),
+                "bridge_address": evm_bridge,
+                "token_address": usdc_evm,
+                "confirmations": 1,
+                "start_block": 0,
+            },
+        }
+    ],
+}
+with open(config_path, "w", encoding="utf-8") as handle:
+    json.dump(config, handle, indent=2)
+    handle.write("\n")
+print(f"wrote {state_path}")
+print(f"wrote {config_path}")
+PY
+}
+
+start_bridge() {
+  if is_running bridge; then
+    echo "skip  bridge (already running)"
+    return
+  fi
+  if [[ ! -x "$BRIDGE_BIN" ]]; then
+    echo "lightpool-bridge not found: $BRIDGE_BIN" >&2
+    echo "build: (cd $LABS/lightpool-bridge && cargo build --release)" >&2
+    exit 1
+  fi
+  if [[ ! -f "$BRIDGE_CONFIG" ]]; then
+    echo "bridge config missing: $BRIDGE_CONFIG" >&2
+    exit 1
+  fi
+  echo "start bridge"
+  setsid "$BRIDGE_BIN" --config "$BRIDGE_CONFIG" \
+    >"$LOG_DIR/bridge.log" 2>&1 < /dev/null &
+  echo $! >"$PID_DIR/bridge.pid"
+  sleep 2
+  if ! is_running bridge; then
+    echo "bridge exited; see $LOG_DIR/bridge.log" >&2
+    exit 1
+  fi
+  echo "ok    bridge"
+}
+
+mint_reth_usdc_balances() {
+  local usdc_evm="$1"
+  echo "=== mint USDC on Reth (demo user + admin) ==="
+  mint_erc20 "$usdc_evm" "$USER_ADDR" "$USER_RETH_USDC_WHOLE"
+  mint_erc20 "$usdc_evm" "$MAKER_ADDR" "$ADMIN_RETH_USDC_WHOLE"
+  echo "ok    user=$USER_RETH_USDC_WHOLE admin=$ADMIN_RETH_USDC_WHOLE (whole USDC)"
+}
+
+setup_usdc_bridge() {
+  if [[ -f "$BRIDGE_STATE" ]]; then
+    echo "skip  USDC bridge setup ($BRIDGE_STATE exists)"
+    USDC_EVM="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tokens"][0]; print(t["evm"])' "$BRIDGE_STATE")"
+    LP_USDC="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tokens"][0]; print(t["lp"])' "$BRIDGE_STATE")"
+    IN_USDC="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1]))["tokens"][0]; print(t["inbound"])' "$BRIDGE_STATE")"
+    EVM_BRIDGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["evm_bridge"])' "$BRIDGE_STATE")"
+    EVM_CHAIN_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["evm_chain_id"])' "$BRIDGE_STATE")"
+    write_bridge_config_from_state
+    need_cmd cast
+    mint_reth_usdc_balances "$USDC_EVM"
+    return
+  fi
+  if [[ -f "$BOOTSTRAP_STATE" ]]; then
+    echo "bootstrap.json exists without eth-bridge.json." >&2
+    echo "Bridged USDC must be created before paper markets. Run:" >&2
+    echo "  $0 stop && $0 clean && $0 start" >&2
+    exit 1
+  fi
+  need_cmd cast
+  need_cmd forge
+  prepare_forge_home
+  EVM_CHAIN_ID="$(cast chain-id --rpc-url "$RETH_RPC")"
+  echo "=== fund demo user on Reth (ETH gas) ==="
+  fund_eth "$USER_ADDR" 10ether
+  echo "=== deploy USDC + bridge on Reth ==="
+  deploy_usdc_and_bridge
+  mint_reth_usdc_balances "$USDC_EVM"
+  echo "=== init-bridge LP USDC on LightPool ==="
+  init_lp_usdc
+  write_bridge_state
+}
+
+write_bridge_config_from_state() {
+  python3 - "$BRIDGE_STATE" "$BRIDGE_CONFIG" "$WALLET_PATH" "$LP_RPC" "$RETH_RPC" <<'PY'
+import json, sys
+state_path, config_path, wallet, lp_rpc, reth_rpc = sys.argv[1:]
+state = json.load(open(state_path, encoding="utf-8"))
+routes = []
+for token in state["tokens"]:
+    routes.append({
+        "id": "reth-" + token["symbol"].lower(),
+        "enabled": True,
+        "local_inbound": {
+            "bridge_contract": token["inbound"],
+            "lp_token": token["lp"],
+        },
+        "foreign": {
+            "kind": "evm",
+            "rpc_url": reth_rpc,
+            "chain_id": state["evm_chain_id"],
+            "bridge_address": state["evm_bridge"],
+            "token_address": token["evm"],
+            "confirmations": 1,
+            "start_block": 0,
+        },
+    })
+config = {
+    "wallet_path": wallet,
+    "lightpool_rpc_url": lp_rpc,
+    "cast_bin": "cast",
+    "local": {"rpc_url": lp_rpc, "chain_id": 1},
+    "routes": routes,
+}
+with open(config_path, "w", encoding="utf-8") as handle:
+    json.dump(config, handle, indent=2)
+    handle.write("\n")
+print(f"wrote {config_path}")
+PY
+}
+
 run_bootstrap() {
   echo "=== bootstrap tokens / spots / paper market ==="
   need_cmd cargo
+  local usdc_lp="${LP_USDC:-}"
+  if [[ -z "$usdc_lp" && -f "$BRIDGE_STATE" ]]; then
+    usdc_lp="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tokens"][0]["lp"])' "$BRIDGE_STATE")"
+  fi
   (
     cd "$APP_ROOT/backend"
     INDEXER_URL="$CLOB_HTTP" \
     BOOTSTRAP_STATE="$BOOTSTRAP_STATE" \
     MARKETS_PATH="$MARKETS_PATH" \
     PAPER_FUND_KEY="${PAPER_FUND_KEY:-$USER_KEY}" \
+    USDC_LP="$usdc_lp" \
+    SKIP_PAPER_FUND=1 \
       cargo run --bin paper-bootstrap
   )
 }
@@ -592,6 +960,8 @@ start_backend() {
     echo "PAPER_SIGNER_KEY=${PAPER_SIGNER_KEY:-$USER_KEY}"
     echo "HYPERLIQUID_INFO_URL=https://api.hyperliquid.xyz/info"
     echo "HYPERLIQUID_WS_URL=wss://api.hyperliquid.xyz/ws"
+    echo "BRIDGE_STATE_PATH=${BRIDGE_STATE_PATH:-$DATA/eth-bridge.json}"
+    echo "EVM_RPC_URL=${EVM_RPC_URL:-http://127.0.0.1:8545}"
   } >"$APP_ROOT/backend/.env"
 
   if is_running backend; then
@@ -700,31 +1070,49 @@ print_summary() {
 === papertrade-app ===
 LABS      $LABS
 DATA      $DATA
+Reth      $RETH_RPC
 Node      $LP_RPC
 Indexer   $CLOB_HTTP
+Bridge    $BRIDGE_CONFIG
 Oracle    $ORACLE_CONFIG
 Backend   $APP_API
 Frontend  http://127.0.0.1:3000
-Keeper    paper-keeper (liqd/harvest/push_fees); log \$DATA/logs/keeper.log
+Keeper    \$DATA/logs/keeper.log
 Markets   $MARKETS_PATH
 Bootstrap $BOOTSTRAP_STATE
+Bridge st $BRIDGE_STATE
 
-Validator / admin (Anvil #0):
-  address  $MAKER_ADDR
-  key      $MAKER_KEY
-
-Default trader (Anvil #1):
-  address  $USER_ADDR
-  key      $USER_KEY
-
-Mark: FE → indexer WS channel oracle (spot_market from markets.json)
+Accounts (import into MetaMask)
+  Validator / admin (Anvil #0)
+    address  $MAKER_ADDR
+    key      $MAKER_KEY
+  Demo user / trader (Anvil #1)
+    address  $USER_ADDR
+    key      $USER_KEY
 
 Logs: $LOG_DIR
 Stop: $0 stop
 Clean: $0 clean   # after stop
-
-No bridge / liquidity-maker / Reth in this script.
 EOF
+  if [[ ! -f "$BRIDGE_STATE" ]]; then
+    echo "MetaMask: eth-bridge.json missing ($BRIDGE_STATE)" >&2
+    return
+  fi
+  python3 - "$BRIDGE_STATE" "$RETH_RPC" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+rpc = sys.argv[2]
+print()
+print("MetaMask network")
+print(f"  RPC URL    {rpc}")
+print(f"  Chain ID   {state.get('evm_chain_id')}")
+print(f"  Bridge     {state.get('evm_bridge')}")
+print("Add these ERC20 tokens in MetaMask (6 decimals):")
+for token in state.get("tokens") or []:
+    print(f"  {token.get('symbol'):<6} {token.get('evm')}")
+print()
+print("Flow: Connect MetaMask (#1) → Trade → Deposit USDC from Reth → Open.")
+PY
 }
 
 start_all() {
@@ -733,8 +1121,16 @@ start_all() {
   need_cmd cargo
   need_cmd npm
   need_cmd python3
+  need_cmd cast
+  need_cmd forge
   mkdirs
+  echo "=== start Reth ==="
+  start_reth
+  echo "=== start LightPool node + indexer ==="
   start_venue
+  echo "=== USDC on Reth + inbound bridge ==="
+  setup_usdc_bridge
+  start_bridge
   run_bootstrap
   start_oracle
   start_backend
@@ -755,6 +1151,8 @@ stop_all() {
   stop_pid oracle
   stop_port 3000 frontend
   stop_port 3001 backend
+  stop_bridge
+  stop_reth
   echo "=== stop node / indexer ==="
   stop_venue
   echo "stopped"
@@ -762,19 +1160,18 @@ stop_all() {
 
 clean_all() {
   local name
-  for name in frontend backend keeper oracle lightpool indexer; do
+  for name in frontend backend keeper oracle bridge reth lightpool indexer; do
     if is_running "$name"; then
       echo "services still running; run: $0 stop" >&2
       exit 1
     fi
   done
-  # Venue clean if helper exists
   if [[ -x "$VENUE" ]]; then
     DATA="$DATA" LABS="$LABS" "$VENUE" clean || rm -rf "$DATA"
   else
     rm -rf "$DATA"
   fi
-  # Keep markets.json template; bootstrap will rewrite addresses next start
+  rm -rf "$CONTRACTS/broadcast" "$CONTRACTS/cache" 2>/dev/null || true
   echo "cleaned $DATA"
 }
 
@@ -782,7 +1179,7 @@ status_all() {
   echo "LABS=$LABS"
   echo "DATA=$DATA"
   local name
-  for name in lightpool indexer oracle backend frontend keeper; do
+  for name in reth bridge lightpool indexer oracle backend frontend keeper; do
     if is_running "$name"; then
       echo "UP   $name pid=$(cat "$PID_DIR/$name.pid")"
     else
