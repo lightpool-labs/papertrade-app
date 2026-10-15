@@ -2,7 +2,7 @@
 // Author: xiaoyu1998
 //! Bootstrap local paper stack: USDC + BTC + ETH tokens, BTC/USDC + ETH/USDC spots,
 //! paper market with BTC instrument, LPL + stake (Committee), and a paper USDC
-//! deposit for local MetaMask (anvil #0) so P2–P5 can trade without ETH bridge.
+//! deposit for local MetaMask (anvil #1 trader) so P2–P5 can trade without ETH bridge.
 //! Submits via clob-indexer (no direct node RPC). Does **not** call prom_*;
 //! RunningCommittee fills after the first epoch (~1000 blocks) via epoch epilogue.
 
@@ -24,13 +24,17 @@ use lightpool_sdk::TransactionReceipt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
+/// Anvil / Hardhat #0 — creates markets; paper `admin`.
 const ADMIN_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+/// Anvil / Hardhat #1 — default local trader (MetaMask / FE), not admin.
+const DEFAULT_USER_KEY: &str =
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const TOKEN_SUPPLY_WHOLE: u64 = 1_000_000_000;
 const MIN_ORDER_SIZE: u64 = 100_000;
 const TICK_SIZE: u64 = 10_000;
 const MIN_BOND: u64 = 10_000 * TOKEN_SCALE;
 const BOND_AMOUNT: u64 = 50_000 * TOKEN_SCALE;
-/// Default paper available credit for local MetaMask (anvil account #0 = ADMIN_KEY).
+/// Default paper available credit for local MetaMask (anvil account #1).
 const DEFAULT_PAPER_FUND_USDC: u64 = 1_000_000;
 
 #[derive(Serialize, Deserialize)]
@@ -47,6 +51,9 @@ struct BootstrapState {
     /// True after paper USDC deposit for the local trade wallet.
     #[serde(default)]
     paper_funded: bool,
+    /// Lowercase address last funded via `PAPER_FUND_KEY` (empty = never / legacy).
+    #[serde(default)]
+    paper_funded_for: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -140,6 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             paper_token,
             lpl: None,
             paper_funded: false,
+            paper_funded_for: String::new(),
         };
         write_markets_file(&markets_path, &paper_market, &spot_btc)?;
         println!("wrote {}", markets_path.display());
@@ -156,14 +164,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Paper account funding (no ETH bridge until ~P6): deposit quote USDC so Trade
-    // Available is non-zero. Default wallet = anvil/Hardhat #0 (same as ADMIN_KEY).
-    if !state.paper_funded {
-        let fund_usdc = env::var("PAPER_FUND_USDC")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_PAPER_FUND_USDC);
-        let fund_key = env::var("PAPER_FUND_KEY").unwrap_or_else(|_| ADMIN_KEY.to_string());
-        let user = load_signer(&fund_key)?;
+    // Available is non-zero. Default trader = anvil/Hardhat #1 (not admin #0).
+    let fund_usdc = env::var("PAPER_FUND_USDC")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_PAPER_FUND_USDC);
+    let fund_key = env::var("PAPER_FUND_KEY").unwrap_or_else(|_| DEFAULT_USER_KEY.to_string());
+    let user = load_signer(&fund_key)?;
+    let fund_addr = user.address().to_string();
+    let already_funded = !state.paper_funded_for.is_empty()
+        && state
+            .paper_funded_for
+            .eq_ignore_ascii_case(fund_addr.trim());
+    if already_funded {
+        println!("skip  paper USDC fund (already funded {fund_addr})");
+    } else {
         fund_paper_usdc(
             &client,
             &signer,
@@ -174,8 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
         state.paper_funded = true;
-    } else {
-        println!("skip  paper USDC fund (already funded)");
+        state.paper_funded_for = fund_addr;
     }
 
     if let Some(parent) = state_path.parent() {

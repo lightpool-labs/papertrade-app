@@ -7,8 +7,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Anvil #0 — validator / paper market admin / keeper
 MAKER_KEY="${MAKER_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
 MAKER_ADDR="${MAKER_ADDR:-0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266}"
+# Anvil #1 — default local trader (MetaMask / FE / paper deposit + PAPER_SIGNER)
+USER_KEY="${USER_KEY:-0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d}"
+USER_ADDR="${USER_ADDR:-0x70997970C51812dc3A010C7d01b50e0d17dc79C8}"
 
 LP_RPC="${LP_RPC:-http://127.0.0.1:26300}"
 CLOB_HTTP="${LIGHTPOOL_CLOB_INDEX_HTTP:-http://127.0.0.1:3002}"
@@ -45,6 +49,8 @@ LIGHTPOOL_DIR="$LABS/lightpool"
 INDEXER_DIR="$LABS/lightpool-clob-indexer"
 ORACLE_DIR="$LABS/lightpool-oracle"
 ORACLE_CONFIG="${ORACLE_CONFIG:-$DATA/oracle.config.json}"
+HL_INFO_URL="${HYPERLIQUID_INFO_URL:-https://api.hyperliquid.xyz/info}"
+HL_PROXY_FILE="${HL_PROXY_FILE:-$DATA/hl_proxy.env}"
 VENUE="$LABS/lightpool-tutorials/scripts/run-venue.sh"
 
 if [[ -z "${LIGHTPOOL_BIN:-}" ]]; then
@@ -149,6 +155,8 @@ Usage: $(basename "$0") [start|stop|clean|status|bootstrap]
 Env:
   LABS / DATA / LIGHTPOOL_BIN / INDEXER_BIN / ORACLE_BIN / INDEXER_URL
   ORACLE_CONFIG   default \$DATA/oracle.config.json
+  HL_PROXY / HTTPS_PROXY / HTTP_PROXY / ALL_PROXY
+                  proxy for Hyperliquid (mark feed); prompted if HL unreachable
   CARGO_WATCH=0   use cargo run once instead of cargo watch
   PAPER_KEEPER=0  skip paper-keeper; default starts liqd+harvest+push_fees
 
@@ -161,11 +169,12 @@ Creates on chain (via indexer submit):
   paper  market + BTC instrument (price_market = BTC spot)
   stake  init + register + bond/allocate Committee (no prom_*;
          RunningCommittee fills after ~1000 blocks via epoch epilogue)
-  fund   paper deposit ~1_000_000 USDC for anvil #0 (MetaMask local);
-         no ETH bridge until ~P6. Override: PAPER_FUND_USDC / PAPER_FUND_KEY
+  fund   paper deposit ~1_000_000 USDC for anvil #1 (default trader);
+         admin stays anvil #0. Override: PAPER_FUND_USDC / PAPER_FUND_KEY / USER_KEY
 
-Oracle: HL trades → ora_commit (open-mode until RunningCommittee exists);
-FE mark via indexer WS oracle.
+Oracle: HL trades/allMids → ora_commit (open-mode until RunningCommittee exists);
+FE mark via indexer WS oracle. Start probes Hyperliquid and asks for a proxy
+if the API is unreachable (common without HTTPS_PROXY).
 
 Does NOT start: Reth, bridge, liquidity-maker.
 Paper-keeper (liqd / harvest / push_fees) starts by default.
@@ -335,6 +344,7 @@ run_bootstrap() {
     INDEXER_URL="$CLOB_HTTP" \
     BOOTSTRAP_STATE="$BOOTSTRAP_STATE" \
     MARKETS_PATH="$MARKETS_PATH" \
+    PAPER_FUND_KEY="${PAPER_FUND_KEY:-$USER_KEY}" \
       cargo run --bin paper-bootstrap
   )
 }
@@ -434,9 +444,118 @@ print(f"wrote {out_path} markets={len(markets)}")
 PY
 }
 
+apply_proxy_url() {
+  local proxy="$1"
+  [[ -n "$proxy" ]] || return 1
+  export HTTP_PROXY="$proxy"
+  export HTTPS_PROXY="$proxy"
+  export ALL_PROXY="$proxy"
+  export http_proxy="$proxy"
+  export https_proxy="$proxy"
+  export all_proxy="$proxy"
+}
+
+load_saved_hl_proxy() {
+  if [[ -n "${HL_PROXY:-}" ]]; then
+    apply_proxy_url "$HL_PROXY"
+    return 0
+  fi
+  if [[ -f "$HL_PROXY_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$HL_PROXY_FILE"
+    if [[ -n "${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-${ALL_PROXY:-${all_proxy:-}}}}}}" ]]; then
+      local p="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-${ALL_PROXY:-$all_proxy}}}}}"
+      apply_proxy_url "$p"
+      echo "proxy loaded from $HL_PROXY_FILE"
+      return 0
+    fi
+  fi
+  local existing="${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-${ALL_PROXY:-${all_proxy:-}}}}}}"
+  if [[ -n "$existing" ]]; then
+    apply_proxy_url "$existing"
+  fi
+}
+
+save_hl_proxy() {
+  local proxy="$1"
+  mkdir -p "$(dirname "$HL_PROXY_FILE")"
+  cat >"$HL_PROXY_FILE" <<EOF
+# Written by $(basename "$0") when Hyperliquid required a proxy for mark price.
+export HL_PROXY='$proxy'
+export HTTP_PROXY='$proxy'
+export HTTPS_PROXY='$proxy'
+export ALL_PROXY='$proxy'
+export http_proxy='$proxy'
+export https_proxy='$proxy'
+export all_proxy='$proxy'
+EOF
+}
+
+hyperliquid_reachable() {
+  local body
+  body="$(
+    curl -sS -m 8 -X POST "$HL_INFO_URL" \
+      -H 'content-type: application/json' \
+      -d '{"type":"allMids"}' 2>/dev/null || true
+  )"
+  [[ -n "$body" ]] || return 1
+  # allMids returns a JSON object of coin -> mid string (e.g. "BTC").
+  [[ "$body" == *"\"BTC\""* ]] || [[ "$body" == *'"BTC":'* ]] || [[ "$body" == *"BTC"* && "$body" == *"{"* ]]
+}
+
+ensure_hyperliquid_access() {
+  need_cmd curl
+  load_saved_hl_proxy
+
+  echo "check Hyperliquid ($HL_INFO_URL)"
+  if hyperliquid_reachable; then
+    if [[ -n "${HTTPS_PROXY:-}" ]]; then
+      echo "ok    Hyperliquid reachable (proxy=${HTTPS_PROXY})"
+    else
+      echo "ok    Hyperliquid reachable (direct)"
+    fi
+    return 0
+  fi
+
+  echo "Hyperliquid unreachable — oracle cannot publish mark price without it." >&2
+  if [[ -n "${HTTPS_PROXY:-}" ]]; then
+    echo "current HTTPS_PROXY=${HTTPS_PROXY} still cannot reach Hyperliquid." >&2
+  else
+    echo "no HTTPS_PROXY/HTTP_PROXY/ALL_PROXY/HL_PROXY in the environment." >&2
+  fi
+
+  local proxy=""
+  if [[ -n "${HL_PROXY:-}" ]]; then
+    proxy="$HL_PROXY"
+  elif [[ -t 0 ]]; then
+    echo -n "Enter proxy URL (e.g. http://127.0.0.1:7890), empty to abort: " >&2
+    read -r proxy
+  else
+    echo "non-interactive shell: export HL_PROXY or HTTPS_PROXY and re-run." >&2
+    exit 1
+  fi
+
+  proxy="$(echo "$proxy" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if [[ -z "$proxy" ]]; then
+    echo "aborted: proxy required for Hyperliquid mark feed" >&2
+    exit 1
+  fi
+
+  apply_proxy_url "$proxy"
+  echo "retry Hyperliquid via proxy=$proxy"
+  if ! hyperliquid_reachable; then
+    echo "still cannot reach Hyperliquid via $proxy; check the proxy and re-run." >&2
+    exit 1
+  fi
+
+  save_hl_proxy "$proxy"
+  echo "ok    Hyperliquid reachable via proxy (saved $HL_PROXY_FILE)"
+}
+
 start_oracle() {
   ensure_oracle_binary
   write_oracle_config
+  ensure_hyperliquid_access
 
   if is_running oracle; then
     echo "restart oracle"
@@ -446,6 +565,7 @@ start_oracle() {
   echo "start oracle ($ORACLE_CONFIG)"
   (
     export RUST_LOG="${RUST_LOG:-info}"
+    # Inherit HTTP(S)_PROXY / ALL_PROXY so reqwest allMids seed can reach HL.
     setsid "$ORACLE_BIN" --config "$ORACLE_CONFIG" \
       >"$LOG_DIR/oracle.log" 2>&1 < /dev/null &
     echo $! >"$PID_DIR/oracle.pid"
@@ -469,6 +589,7 @@ start_backend() {
     echo "PORT=3001"
     echo "INDEXER_URL=$CLOB_HTTP"
     echo "MARKETS_PATH=$MARKETS_PATH"
+    echo "PAPER_SIGNER_KEY=${PAPER_SIGNER_KEY:-$USER_KEY}"
     echo "HYPERLIQUID_INFO_URL=https://api.hyperliquid.xyz/info"
     echo "HYPERLIQUID_WS_URL=wss://api.hyperliquid.xyz/ws"
   } >"$APP_ROOT/backend/.env"
@@ -507,7 +628,7 @@ start_frontend() {
     echo "NEXT_PUBLIC_API_URL=$APP_API"
     echo "NEXT_PUBLIC_INDEXER_URL=$CLOB_HTTP"
     echo "NEXT_PUBLIC_INDEXER_WS_URL=ws://127.0.0.1:3002/api/ws"
-    echo "NEXT_PUBLIC_DEV_ADDRESS=$MAKER_ADDR"
+    echo "NEXT_PUBLIC_DEV_ADDRESS=${NEXT_PUBLIC_DEV_ADDRESS:-$USER_ADDR}"
   } >"$APP_ROOT/frontend/.env.local"
 
   if is_running frontend; then
@@ -591,6 +712,10 @@ Bootstrap $BOOTSTRAP_STATE
 Validator / admin (Anvil #0):
   address  $MAKER_ADDR
   key      $MAKER_KEY
+
+Default trader (Anvil #1):
+  address  $USER_ADDR
+  key      $USER_KEY
 
 Mark: FE → indexer WS channel oracle (spot_market from markets.json)
 

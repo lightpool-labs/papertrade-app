@@ -71,6 +71,25 @@ struct AccountQuery {
 }
 
 #[derive(Deserialize)]
+struct PaperStakeQuery {
+    market: Option<String>,
+    address: String,
+}
+
+#[derive(Deserialize)]
+struct PaperActivityQuery {
+    market: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct PaperStakeHistoryQuery {
+    market: Option<String>,
+    from_ms: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 struct PositionsQuery {
     address: String,
     market: Option<String>,
@@ -86,6 +105,27 @@ struct HistoryQuery {
 #[derive(Deserialize)]
 struct HouseQuery {
     market: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct OiHistoryQuery {
+    market: Option<String>,
+    instrument: Option<u32>,
+    from_ms: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct DebtHistoryQuery {
+    market: Option<String>,
+    from_ms: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct QueuePlacementQuery {
+    market: Option<String>,
+    owner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -145,8 +185,18 @@ async fn main() {
                 .route("/positions", get(get_positions))
                 .route("/history", get(get_history))
                 .route("/house", get(get_house))
+                .route("/house/oi/history", get(get_oi_history))
+                .route("/house/history", get(get_house_history))
+                .route("/house/queue/history", get(get_debt_history))
+                .route("/house/queue/placement", get(get_queue_placement))
+                .route("/paper", get(get_paper))
+                .route("/paper/activity", get(get_paper_activity))
+                .route("/paper/stake/history", get(get_paper_stake_history))
                 .route("/paper/open", post(open_paper))
                 .route("/paper/close", post(close_paper))
+                .route("/paper/stake", post(stake_paper))
+                .route("/paper/unstake", post(unstake_paper))
+                .route("/paper/claim", post(claim_paper))
                 .route("/tx/submit", post(submit_tx))
                 .route("/ws", get(ws_upgrade)),
         )
@@ -328,6 +378,156 @@ async fn get_house(
     Ok(Json(body))
 }
 
+async fn get_oi_history(
+    State(state): State<AppState>,
+    Query(query): Query<OiHistoryQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let market = query
+        .market
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| state.markets.config_snapshot().paper_market);
+    if market.trim().is_empty() {
+        return Err(error::AppError::BadRequest(
+            "paper market is required (set markets.json paper_market or pass ?market=)".into(),
+        ));
+    }
+    let instrument = query.instrument.unwrap_or(0);
+    let body = state
+        .indexer
+        .get_paper_oi_history(market.trim(), instrument, query.from_ms, query.limit)
+        .await?;
+    Ok(Json(body))
+}
+
+async fn get_house_history(
+    State(state): State<AppState>,
+    Query(query): Query<DebtHistoryQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let market = query
+        .market
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| state.markets.config_snapshot().paper_market);
+    if market.trim().is_empty() {
+        return Err(error::AppError::BadRequest(
+            "paper market is required (set markets.json paper_market or pass ?market=)".into(),
+        ));
+    }
+    let body = state
+        .indexer
+        .get_paper_house_history(market.trim(), query.from_ms, query.limit)
+        .await?;
+    Ok(Json(body))
+}
+
+async fn get_debt_history(
+    State(state): State<AppState>,
+    Query(query): Query<DebtHistoryQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let market = query
+        .market
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| state.markets.config_snapshot().paper_market);
+    if market.trim().is_empty() {
+        return Err(error::AppError::BadRequest(
+            "paper market is required (set markets.json paper_market or pass ?market=)".into(),
+        ));
+    }
+    let body = state
+        .indexer
+        .get_paper_debt_history(market.trim(), query.from_ms, query.limit)
+        .await?;
+    Ok(Json(body))
+}
+
+async fn get_queue_placement(
+    State(state): State<AppState>,
+    Query(query): Query<QueuePlacementQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let market = query
+        .market
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| state.markets.config_snapshot().paper_market);
+    let owner = query.owner.filter(|s| !s.trim().is_empty()).unwrap_or_default();
+    if market.trim().is_empty() {
+        return Err(error::AppError::BadRequest(
+            "paper market is required (set markets.json paper_market or pass ?market=)".into(),
+        ));
+    }
+    if owner.trim().is_empty() {
+        return Err(error::AppError::BadRequest("owner is required".into()));
+    }
+    let body = state
+        .indexer
+        .get_paper_queue_placement(market.trim(), owner.trim())
+        .await?;
+    Ok(Json(body))
+}
+
+async fn get_paper(
+    State(state): State<AppState>,
+    Query(query): Query<PaperStakeQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let market = query
+        .market
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| state.markets.config_snapshot().paper_market);
+    if market.trim().is_empty() {
+        return Err(error::AppError::BadRequest(
+            "paper market is required (set markets.json paper_market or pass ?market=)".into(),
+        ));
+    }
+    if query.address.trim().is_empty() {
+        return Err(error::AppError::BadRequest("address is required".into()));
+    }
+    let body = state
+        .indexer
+        .get_paper_stake(market.trim(), query.address.trim())
+        .await?;
+    Ok(Json(body))
+}
+
+async fn get_paper_activity(
+    State(state): State<AppState>,
+    Query(query): Query<PaperActivityQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let market = query
+        .market
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| state.markets.config_snapshot().paper_market);
+    let body = state
+        .indexer
+        .get_paper_activity(
+            if market.trim().is_empty() {
+                None
+            } else {
+                Some(market.trim())
+            },
+            query.limit,
+        )
+        .await?;
+    Ok(Json(body))
+}
+
+async fn get_paper_stake_history(
+    State(state): State<AppState>,
+    Query(query): Query<PaperStakeHistoryQuery>,
+) -> AppResult<Json<serde_json::Value>> {
+    let market = query
+        .market
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| state.markets.config_snapshot().paper_market);
+    if market.trim().is_empty() {
+        return Err(error::AppError::BadRequest(
+            "paper market is required (set markets.json paper_market or pass ?market=)".into(),
+        ));
+    }
+    let body = state
+        .indexer
+        .get_paper_stake_history(market.trim(), query.from_ms, query.limit)
+        .await?;
+    Ok(Json(body))
+}
+
 async fn open_paper(
     State(state): State<AppState>,
     Json(body): Json<paper_tx::OpenPaperRequest>,
@@ -340,6 +540,27 @@ async fn close_paper(
     Json(body): Json<paper_tx::ClosePaperRequest>,
 ) -> AppResult<Json<paper_tx::ClosePaperResponse>> {
     Ok(Json(paper_tx::close_paper(&state, body).await?))
+}
+
+async fn stake_paper(
+    State(state): State<AppState>,
+    Json(body): Json<paper_tx::StakePaperRequest>,
+) -> AppResult<Json<paper_tx::StakePaperResponse>> {
+    Ok(Json(paper_tx::stake_paper(&state, body).await?))
+}
+
+async fn unstake_paper(
+    State(state): State<AppState>,
+    Json(body): Json<paper_tx::UnstakePaperRequest>,
+) -> AppResult<Json<paper_tx::UnstakePaperResponse>> {
+    Ok(Json(paper_tx::unstake_paper(&state, body).await?))
+}
+
+async fn claim_paper(
+    State(state): State<AppState>,
+    Json(body): Json<paper_tx::ClaimPaperRequest>,
+) -> AppResult<Json<paper_tx::ClaimPaperResponse>> {
+    Ok(Json(paper_tx::claim_paper(&state, body).await?))
 }
 
 async fn submit_tx(

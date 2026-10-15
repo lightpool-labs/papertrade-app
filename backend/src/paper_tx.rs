@@ -3,16 +3,17 @@
 
 use lightpool_sdk::{
     extract_paper_closed, extract_paper_opened, parse_token_contract, ActionBuilder,
-    PaperCloseParams, PaperOpenParams, Signer, TransactionBuilder, TOKEN_SCALE,
+    PaperClaimParams, PaperCloseParams, PaperOpenParams, PaperStakeParams, PaperUnstakeParams,
+    Signer, TransactionBuilder, TOKEN_SCALE,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
-/// Anvil / Hardhat account #0 — same key paper-bootstrap funds.
+/// Anvil / Hardhat account #1 — default local trader (not paper market admin).
 const DEFAULT_PAPER_SIGNER_KEY: &str =
-    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 
 #[derive(Debug, Deserialize)]
 pub struct OpenPaperRequest {
@@ -198,6 +199,190 @@ pub async fn close_paper(
         block_num: result.block_num,
         status: "ok".into(),
         position: req.position,
+        owner: owner.to_string(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StakePaperRequest {
+    pub market: String,
+    /// Human PAPER amount (scaled by TOKEN_SCALE on chain).
+    pub amount: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StakePaperResponse {
+    pub digest: String,
+    pub block_num: u64,
+    pub status: String,
+    pub owner: String,
+    pub amount_raw: u64,
+}
+
+pub async fn stake_paper(
+    state: &AppState,
+    req: StakePaperRequest,
+) -> AppResult<StakePaperResponse> {
+    let market_raw = req.market.trim();
+    if market_raw.is_empty() {
+        return Err(AppError::BadRequest("market is required".into()));
+    }
+    if !req.amount.is_finite() || req.amount <= 0.0 {
+        return Err(AppError::BadRequest("amount must be a positive number".into()));
+    }
+    let amount_raw = (req.amount * TOKEN_SCALE as f64).round() as u64;
+    if amount_raw == 0 {
+        return Err(AppError::BadRequest("amount too small after scale".into()));
+    }
+
+    let paper = parse_token_contract(market_raw)
+        .map_err(|e| AppError::BadRequest(format!("invalid paper market: {e}")))?;
+    let signer = paper_signer()?;
+    let owner = signer.address();
+
+    let action = ActionBuilder::stake_paper(paper, PaperStakeParams { amount: amount_raw })
+        .map_err(|e| AppError::Internal(format!("build stake_paper: {e}")))?;
+
+    let tx = TransactionBuilder::new()
+        .sender(owner)
+        .account(owner)
+        .expiration(u64::MAX)
+        .add_action(action)
+        .build_and_sign_only(&signer)
+        .map_err(|e| AppError::Internal(format!("sign stake_paper: {e}")))?;
+
+    let result = state.indexer.submit_transaction(tx).await?;
+    if !result.receipt.is_success() {
+        return Err(AppError::BadRequest(format!(
+            "stake_paper failed: {:?}",
+            result.receipt.status
+        )));
+    }
+
+    Ok(StakePaperResponse {
+        digest: result.digest,
+        block_num: result.block_num,
+        status: "ok".into(),
+        owner: owner.to_string(),
+        amount_raw,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UnstakePaperRequest {
+    pub market: String,
+    pub amount: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UnstakePaperResponse {
+    pub digest: String,
+    pub block_num: u64,
+    pub status: String,
+    pub owner: String,
+    pub amount_raw: u64,
+}
+
+pub async fn unstake_paper(
+    state: &AppState,
+    req: UnstakePaperRequest,
+) -> AppResult<UnstakePaperResponse> {
+    let market_raw = req.market.trim();
+    if market_raw.is_empty() {
+        return Err(AppError::BadRequest("market is required".into()));
+    }
+    if !req.amount.is_finite() || req.amount <= 0.0 {
+        return Err(AppError::BadRequest("amount must be a positive number".into()));
+    }
+    let amount_raw = (req.amount * TOKEN_SCALE as f64).round() as u64;
+    if amount_raw == 0 {
+        return Err(AppError::BadRequest("amount too small after scale".into()));
+    }
+
+    let paper = parse_token_contract(market_raw)
+        .map_err(|e| AppError::BadRequest(format!("invalid paper market: {e}")))?;
+    let signer = paper_signer()?;
+    let owner = signer.address();
+
+    let action =
+        ActionBuilder::unstake_paper(paper, PaperUnstakeParams { amount: amount_raw })
+            .map_err(|e| AppError::Internal(format!("build unstake_paper: {e}")))?;
+
+    let tx = TransactionBuilder::new()
+        .sender(owner)
+        .account(owner)
+        .expiration(u64::MAX)
+        .add_action(action)
+        .build_and_sign_only(&signer)
+        .map_err(|e| AppError::Internal(format!("sign unstake_paper: {e}")))?;
+
+    let result = state.indexer.submit_transaction(tx).await?;
+    if !result.receipt.is_success() {
+        return Err(AppError::BadRequest(format!(
+            "unstake_paper failed: {:?}",
+            result.receipt.status
+        )));
+    }
+
+    Ok(UnstakePaperResponse {
+        digest: result.digest,
+        block_num: result.block_num,
+        status: "ok".into(),
+        owner: owner.to_string(),
+        amount_raw,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClaimPaperRequest {
+    pub market: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClaimPaperResponse {
+    pub digest: String,
+    pub block_num: u64,
+    pub status: String,
+    pub owner: String,
+}
+
+pub async fn claim_paper(
+    state: &AppState,
+    req: ClaimPaperRequest,
+) -> AppResult<ClaimPaperResponse> {
+    let market_raw = req.market.trim();
+    if market_raw.is_empty() {
+        return Err(AppError::BadRequest("market is required".into()));
+    }
+
+    let paper = parse_token_contract(market_raw)
+        .map_err(|e| AppError::BadRequest(format!("invalid paper market: {e}")))?;
+    let signer = paper_signer()?;
+    let owner = signer.address();
+
+    let action = ActionBuilder::claim_paper(paper, PaperClaimParams {})
+        .map_err(|e| AppError::Internal(format!("build claim_paper: {e}")))?;
+
+    let tx = TransactionBuilder::new()
+        .sender(owner)
+        .account(owner)
+        .expiration(u64::MAX)
+        .add_action(action)
+        .build_and_sign_only(&signer)
+        .map_err(|e| AppError::Internal(format!("sign claim_paper: {e}")))?;
+
+    let result = state.indexer.submit_transaction(tx).await?;
+    if !result.receipt.is_success() {
+        return Err(AppError::BadRequest(format!(
+            "claim_paper failed: {:?}",
+            result.receipt.status
+        )));
+    }
+
+    Ok(ClaimPaperResponse {
+        digest: result.digest,
+        block_num: result.block_num,
+        status: "ok".into(),
         owner: owner.to_string(),
     })
 }

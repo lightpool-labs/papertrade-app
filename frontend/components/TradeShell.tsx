@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/TopBar";
+import { HouseActivityBanner } from "@/components/HouseActivityBanner";
 import { InstrumentHeader } from "@/components/InstrumentHeader";
 import { CandleChart } from "@/components/CandleChart";
 import { MarkPriceCurve } from "@/components/MarkPriceCurve";
@@ -331,7 +332,7 @@ function TradeBody() {
   );
 
   return (
-    <div className="app-shell">
+    <div className="app-shell app-shell-with-activity">
       <div className="shell-top">
         <TopBar />
       </div>
@@ -378,6 +379,8 @@ function TradeBody() {
         openPnl={liveOpenPnl}
         onClosed={onClosed}
       />
+
+      <HouseActivityBanner market={selected?.paper_market} />
     </div>
   );
 }

@@ -224,6 +224,17 @@ export type OpenPaperResponse = {
   owner: string;
 };
 
+export type PaperInstrumentExposure = {
+  instrument: number;
+  name: string;
+  long: string;
+  long_raw: number;
+  short: string;
+  short_raw: number;
+  net: string;
+  net_raw: number;
+};
+
 export type PaperHouse = {
   market: string;
   free_cash: string;
@@ -243,6 +254,28 @@ export type PaperHouse = {
   dev_fee_acc: string;
   dev_fee_acc_raw: number;
   queue_nonempty: boolean;
+  open_interest: string;
+  open_interest_raw: number;
+  open_margin: string;
+  open_margin_raw: number;
+  open_positions: number;
+  instruments: PaperInstrumentExposure[];
+  lp_balance: string;
+  lp_balance_raw: number;
+  open_house_pnl: string;
+  open_house_pnl_raw: number;
+  queue_debt: string;
+  queue_debt_raw: number;
+  queue_debt_positions?: number;
+  queue_largest?: string;
+  queue_largest_raw?: number;
+  queue_paid_next?: string;
+  queue_paid_next_raw?: number;
+  queue_paid_next_user?: string;
+  house_funds: string;
+  house_funds_raw: number;
+  volume: string;
+  volume_raw: number;
 };
 
 export async function getHouse(market?: string): Promise<PaperHouse> {
@@ -253,6 +286,309 @@ export async function getHouse(market?: string): Promise<PaperHouse> {
   if (!res.ok) throw new Error(await parseError(res));
   const body = (await res.json()) as { house: PaperHouse };
   return body.house;
+}
+
+export type PaperOiHistoryTick = {
+  t: number;
+  long: string;
+  short: string;
+  long_raw: number;
+  short_raw: number;
+};
+
+export type PaperOiHistoryResponse = {
+  market: string;
+  instrument: number;
+  name: string;
+  ticks: PaperOiHistoryTick[];
+};
+
+export async function getHouseOiHistory(
+  market: string,
+  opts?: { instrument?: number; fromMs?: number; limit?: number },
+): Promise<PaperOiHistoryResponse> {
+  const q = new URLSearchParams();
+  q.set("market", market.trim());
+  if (opts?.instrument != null) q.set("instrument", String(opts.instrument));
+  if (opts?.fromMs != null) q.set("from_ms", String(opts.fromMs));
+  if (opts?.limit != null) q.set("limit", String(opts.limit));
+  const res = await fetch(`${API_URL}/house/oi/history?${q}`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export type PaperHouseHistoryTick = {
+  t: number;
+  house_funds: string;
+  house_funds_raw: number;
+  lp_balance: string;
+  lp_balance_raw: number;
+  open_house_pnl: string;
+  open_house_pnl_raw: number;
+  queue_debt: string;
+  queue_debt_raw: number;
+};
+
+export type PaperHouseHistoryResponse = {
+  market: string;
+  ticks: PaperHouseHistoryTick[];
+};
+
+export async function getHouseHistory(
+  market: string,
+  opts?: { fromMs?: number; limit?: number },
+): Promise<PaperHouseHistoryResponse> {
+  const q = new URLSearchParams();
+  q.set("market", market.trim());
+  if (opts?.fromMs != null) q.set("from_ms", String(opts.fromMs));
+  if (opts?.limit != null) q.set("limit", String(opts.limit));
+  const res = await fetch(`${API_URL}/house/history?${q}`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export type PaperDebtHistoryTick = {
+  t: number;
+  debt: string;
+  debt_raw: number;
+};
+
+export type PaperDebtHistoryResponse = {
+  market: string;
+  ticks: PaperDebtHistoryTick[];
+};
+
+export async function getHouseDebtHistory(
+  market: string,
+  opts?: { fromMs?: number; limit?: number },
+): Promise<PaperDebtHistoryResponse> {
+  const q = new URLSearchParams();
+  q.set("market", market.trim());
+  if (opts?.fromMs != null) q.set("from_ms", String(opts.fromMs));
+  if (opts?.limit != null) q.set("limit", String(opts.limit));
+  const res = await fetch(`${API_URL}/house/queue/history?${q}`);
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export type PaperQueuePlacement = {
+  market: string;
+  address: string;
+  ahead: string;
+  ahead_raw: number;
+  yours: string;
+  yours_raw: number;
+  behind: string;
+  behind_raw: number;
+  your_entries: number;
+  in_queue: boolean;
+};
+
+export async function getHouseQueuePlacement(
+  market: string,
+  owner: string,
+): Promise<PaperQueuePlacement> {
+  const q = new URLSearchParams();
+  q.set("market", market.trim());
+  q.set("owner", owner.trim());
+  const res = await fetch(`${API_URL}/house/queue/placement?${q}`);
+  if (!res.ok) throw new Error(await parseError(res));
+  const body = (await res.json()) as { placement: PaperQueuePlacement };
+  return body.placement;
+}
+
+export type PaperStake = {
+  market: string;
+  address: string;
+  paper_token: string;
+  paper: string;
+  paper_raw: number;
+  staked: string;
+  staked_raw: number;
+  claimable: string;
+  claimable_raw: number;
+  pending_reward: string;
+  pending_reward_raw: number;
+  reward_pool: string;
+  reward_pool_raw: number;
+  total_staked: string;
+  total_staked_raw: number;
+  stake_share_pct: string;
+  rewards_claimed: string;
+  rewards_claimed_raw: number;
+  total_staker_rewards: string;
+  total_staker_rewards_raw: number;
+  reward_rate: string;
+  mint_rate: string;
+  mint_rate_raw: number;
+  tracked_lp: string;
+  tracked_lp_raw: number;
+  tail_hwm: string;
+  tail_hwm_raw: number;
+  flat_threshold: string;
+  flat_threshold_raw: number;
+  flat_rate_ppm: number;
+  tail_decay_scale: string;
+  tail_decay_scale_raw: number;
+  reward_token: string;
+  total_supply: string;
+  total_supply_raw: number;
+  staked_supply: string;
+  staked_supply_raw: number;
+  stake_ratio_pct: string;
+  staking_contract: string;
+};
+
+export type PaperActivityItem = {
+  kind: string;
+  market: string;
+  user: string;
+  amount: string;
+  amount_raw: number;
+  pnl?: string;
+  pnl_raw?: number;
+  position?: number;
+  block_num: number;
+  ts_ms: number;
+};
+
+export type PaperStakeHistoryTick = {
+  t: number;
+  staking_revenue: string;
+  staking_revenue_raw: number;
+  total_paper_supply: string;
+  total_paper_supply_raw: number;
+  total_staking_reward: string;
+  total_staking_reward_raw: number;
+};
+
+export async function getPaperStakeHistory(
+  market: string,
+  opts?: { fromMs?: number; limit?: number },
+): Promise<PaperStakeHistoryTick[]> {
+  const q = new URLSearchParams();
+  q.set("market", market.trim());
+  if (opts?.fromMs != null) q.set("from_ms", String(opts.fromMs));
+  if (opts?.limit != null) q.set("limit", String(opts.limit));
+  const res = await fetch(`${API_URL}/paper/stake/history?${q}`);
+  if (!res.ok) {
+    const message = await parseError(res);
+    throw new Error(
+      `${message} (restart indexer with paper routes: /api/paper/stake/history)`,
+    );
+  }
+  const body = (await res.json()) as { ticks: PaperStakeHistoryTick[] };
+  return body.ticks ?? [];
+}
+
+export async function getPaperActivity(
+  market?: string,
+  limit?: number,
+): Promise<PaperActivityItem[]> {
+  const q = new URLSearchParams();
+  if (market?.trim()) q.set("market", market.trim());
+  if (limit != null) q.set("limit", String(limit));
+  const qs = q.toString();
+  const res = await fetch(`${API_URL}/paper/activity${qs ? `?${qs}` : ""}`);
+  if (!res.ok) {
+    const message = await parseError(res);
+    throw new Error(
+      `${message} (restart indexer with paper routes: /api/paper/activity)`,
+    );
+  }
+  const body = (await res.json()) as { activities: PaperActivityItem[] };
+  return body.activities ?? [];
+}
+
+export async function getPaper(
+  address: string,
+  market?: string,
+): Promise<PaperStake> {
+  const q = new URLSearchParams();
+  q.set("address", address.trim());
+  if (market?.trim()) q.set("market", market.trim());
+  const res = await fetch(`${API_URL}/paper?${q}`);
+  if (!res.ok) {
+    const message = await parseError(res);
+    throw new Error(
+      `${message} (restart indexer with paper routes: /api/paper/stake)`,
+    );
+  }
+  const body = (await res.json()) as { stake: PaperStake };
+  return body.stake;
+}
+
+export type StakePaperRequest = {
+  market: string;
+  amount: number;
+};
+
+export type StakePaperResponse = {
+  digest: string;
+  block_num: number;
+  status: string;
+  owner: string;
+  amount_raw: number;
+};
+
+export async function stakePaper(
+  body: StakePaperRequest,
+): Promise<StakePaperResponse> {
+  const res = await fetch(`${API_URL}/paper/stake`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export type UnstakePaperRequest = {
+  market: string;
+  amount: number;
+};
+
+export type UnstakePaperResponse = {
+  digest: string;
+  block_num: number;
+  status: string;
+  owner: string;
+  amount_raw: number;
+};
+
+export async function unstakePaper(
+  body: UnstakePaperRequest,
+): Promise<UnstakePaperResponse> {
+  const res = await fetch(`${API_URL}/paper/unstake`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+export type ClaimPaperRequest = {
+  market: string;
+};
+
+export type ClaimPaperResponse = {
+  digest: string;
+  block_num: number;
+  status: string;
+  owner: string;
+};
+
+export async function claimPaper(
+  body: ClaimPaperRequest,
+): Promise<ClaimPaperResponse> {
+  const res = await fetch(`${API_URL}/paper/claim`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
 }
 
 export async function openPaper(

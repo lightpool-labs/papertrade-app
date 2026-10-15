@@ -47,6 +47,24 @@ export function formatUsd(value: number, digits = 2): string {
   });
 }
 
+/** Compact Y-axis labels for house charts (`$1.2K`, `$3.5M`). */
+export function formatAxisUsd(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  const sign = value < 0 ? "-" : "";
+  const a = Math.abs(value);
+  if (a >= 1_000_000) {
+    const n = a / 1_000_000;
+    return `${sign}$${n >= 10 ? n.toFixed(0) : n.toFixed(1)}M`;
+  }
+  if (a >= 1_000) {
+    const n = a / 1_000;
+    return `${sign}$${n >= 10 ? n.toFixed(0) : n.toFixed(1)}K`;
+  }
+  if (a >= 10) return `${sign}$${a.toFixed(0)}`;
+  if (a === 0) return "$0";
+  return `${sign}$${a.toFixed(2)}`;
+}
+
 /** Format indexer token amount strings (`1000000`, `-12.5`) as `1,000,000.00`. */
 export function formatAmount(raw: string | number | null | undefined): string {
   if (raw == null || raw === "") return "—";

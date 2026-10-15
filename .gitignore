@@ -6,5 +6,6 @@ frontend/out/
 frontend/.env.local
 frontend/.env*.local
 keepers/target/
+tests/target/
 *.log
 .DS_Store

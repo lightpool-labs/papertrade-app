@@ -6,6 +6,9 @@
 //! Talks to LightPool only through clob-indexer HTTP/WS — same path as paper-bootstrap
 //! and the strategy BFF.
 //!
+//! Harvest and push_fees each run on a **dedicated OS thread** so liqd bust spam
+//! cannot starve payouts or fee drains.
+//!
 //! ```sh
 //! cd papertrade-app/keepers
 //! INDEXER_URL=http://127.0.0.1:3002 \
@@ -33,7 +36,7 @@ struct Args {
     /// Override MARKETS_PATH.
     #[arg(long, env = "MARKETS_PATH")]
     markets_path: Option<String>,
-    /// Poll interval for harvest / push_fees (ms).
+    /// Idle poll when harvest queue is empty / push_fees interval (ms).
     #[arg(long, env = "PAPER_KEEPER_POLL_MS")]
     poll_ms: Option<u64>,
     /// Disable liquidation loop.
@@ -79,14 +82,14 @@ async fn main() -> Result<()> {
 
     let markets = cfg.load_markets().context("load markets.json")?;
     let paper_market = markets.paper_market.clone();
-    let signer = load_signer(&cfg.private_key)?;
-    let client = IndexerHttp::new(&cfg.indexer_url)?;
+    let keeper_addr = load_signer(&cfg.private_key)?.address();
+    let health_client = IndexerHttp::new(&cfg.indexer_url)?;
 
     tracing::info!(
         indexer = %cfg.indexer_url,
         markets = %cfg.markets_path.display(),
         paper_market = %paper_market,
-        keeper = %signer.address(),
+        keeper = %keeper_addr,
         liqd = cfg.enable_liqd,
         harvest = cfg.enable_harvest,
         push_fees = cfg.enable_push_fees,
@@ -97,7 +100,7 @@ async fn main() -> Result<()> {
     );
 
     for i in 1..=60 {
-        if client.health_ok().await {
+        if health_client.health_ok().await {
             tracing::info!("indexer ready");
             break;
         }
@@ -111,7 +114,30 @@ async fn main() -> Result<()> {
         anyhow::bail!("all keeper modules disabled");
     }
 
+    // Harvest / push_fees never share the liqd select — drain on own threads.
+    if cfg.enable_harvest {
+        harvest::spawn_drain_thread(
+            cfg.indexer_url.clone(),
+            cfg.markets_path.clone(),
+            cfg.private_key.clone(),
+            cfg.harvest_max_entries,
+            Duration::from_millis(250),
+        )
+        .context("start harvest drain thread")?;
+    }
+    if cfg.enable_push_fees {
+        push_fees::spawn_drain_thread(
+            cfg.indexer_url.clone(),
+            cfg.markets_path.clone(),
+            cfg.private_key.clone(),
+            cfg.poll_interval,
+        )
+        .context("start push_fees drain thread")?;
+    }
+
     if cfg.enable_liqd {
+        let signer = load_signer(&cfg.private_key)?;
+        let client = IndexerHttp::new(&cfg.indexer_url)?;
         return liqd::run_loop(
             client,
             &signer,
@@ -120,8 +146,9 @@ async fn main() -> Result<()> {
             cfg.page_limit,
             cfg.liqd_reconcile_interval,
             SideLoops {
-                enable_harvest: cfg.enable_harvest,
-                enable_push_fees: cfg.enable_push_fees,
+                // Harvest + push_fees are on dedicated threads above.
+                enable_harvest: false,
+                enable_push_fees: false,
                 harvest_max_entries: cfg.harvest_max_entries,
                 side_poll: cfg.poll_interval,
             },
@@ -129,34 +156,8 @@ async fn main() -> Result<()> {
         .await;
     }
 
-    // Harvest / push_fees only (no liqd).
+    // No liqd: harvest / push_fees threads already running — park main.
     loop {
-        let markets = match cfg.load_markets() {
-            Ok(m) => m,
-            Err(err) => {
-                tracing::error!(error = %err, "reload markets.json failed");
-                tokio::time::sleep(cfg.poll_interval).await;
-                continue;
-            }
-        };
-        let paper = markets.paper_market.trim();
-
-        if cfg.enable_harvest && !paper.is_empty() {
-            match harvest::run_once(&client, &signer, paper, cfg.harvest_max_entries).await {
-                Ok(true) => tracing::info!("harvest tick done"),
-                Ok(false) => tracing::debug!("harvest tick: nothing to pay"),
-                Err(err) => tracing::error!(error = %err, "harvest tick failed"),
-            }
-        }
-
-        if cfg.enable_push_fees && !paper.is_empty() {
-            match push_fees::run_once(&client, &signer, paper).await {
-                Ok(true) => tracing::info!("push_fees tick done"),
-                Ok(false) => tracing::debug!("push_fees tick: nothing to distribute"),
-                Err(err) => tracing::error!(error = %err, "push_fees tick failed"),
-            }
-        }
-
-        tokio::time::sleep(cfg.poll_interval).await;
+        tokio::time::sleep(Duration::from_secs(3600)).await;
     }
 }

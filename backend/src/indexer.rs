@@ -234,6 +234,135 @@ impl IndexerClient {
         self.get_json(&url).await
     }
 
+    pub async fn get_paper_stake(
+        &self,
+        market: &str,
+        address: &str,
+    ) -> AppResult<serde_json::Value> {
+        let url = format!(
+            "{}/api/paper/stake?market={}&address={}",
+            self.base_url,
+            urlencoding_encode(market),
+            urlencoding_encode(address)
+        );
+        self.get_json(&url).await
+    }
+
+    pub async fn get_paper_stake_history(
+        &self,
+        market: &str,
+        from_ms: Option<u64>,
+        limit: Option<usize>,
+    ) -> AppResult<serde_json::Value> {
+        let mut url = format!(
+            "{}/api/paper/stake/history?market={}",
+            self.base_url,
+            urlencoding_encode(market)
+        );
+        if let Some(from_ms) = from_ms {
+            url.push_str(&format!("&from_ms={from_ms}"));
+        }
+        if let Some(limit) = limit {
+            url.push_str(&format!("&limit={limit}"));
+        }
+        self.get_json(&url).await
+    }
+
+    pub async fn get_paper_activity(
+        &self,
+        market: Option<&str>,
+        limit: Option<usize>,
+    ) -> AppResult<serde_json::Value> {
+        let mut url = format!("{}/api/paper/activity", self.base_url);
+        let mut q = Vec::new();
+        if let Some(m) = market.filter(|s| !s.trim().is_empty()) {
+            q.push(format!("market={}", urlencoding_encode(m)));
+        }
+        if let Some(limit) = limit {
+            q.push(format!("limit={limit}"));
+        }
+        if !q.is_empty() {
+            url.push('?');
+            url.push_str(&q.join("&"));
+        }
+        self.get_json(&url).await
+    }
+
+    pub async fn get_paper_oi_history(
+        &self,
+        market: &str,
+        instrument: u32,
+        from_ms: Option<u64>,
+        limit: Option<usize>,
+    ) -> AppResult<serde_json::Value> {
+        let mut url = format!(
+            "{}/api/paper/house/oi/history?market={}&instrument={instrument}",
+            self.base_url,
+            urlencoding_encode(market)
+        );
+        if let Some(from_ms) = from_ms {
+            url.push_str(&format!("&from_ms={from_ms}"));
+        }
+        if let Some(limit) = limit {
+            url.push_str(&format!("&limit={limit}"));
+        }
+        self.get_json(&url).await
+    }
+
+    pub async fn get_paper_house_history(
+        &self,
+        market: &str,
+        from_ms: Option<u64>,
+        limit: Option<usize>,
+    ) -> AppResult<serde_json::Value> {
+        let mut url = format!(
+            "{}/api/paper/house/history?market={}",
+            self.base_url,
+            urlencoding_encode(market)
+        );
+        if let Some(from_ms) = from_ms {
+            url.push_str(&format!("&from_ms={from_ms}"));
+        }
+        if let Some(limit) = limit {
+            url.push_str(&format!("&limit={limit}"));
+        }
+        self.get_json(&url).await
+    }
+
+    pub async fn get_paper_debt_history(
+        &self,
+        market: &str,
+        from_ms: Option<u64>,
+        limit: Option<usize>,
+    ) -> AppResult<serde_json::Value> {
+        let mut url = format!(
+            "{}/api/paper/house/queue/history?market={}",
+            self.base_url,
+            urlencoding_encode(market)
+        );
+        if let Some(from_ms) = from_ms {
+            url.push_str(&format!("&from_ms={from_ms}"));
+        }
+        if let Some(limit) = limit {
+            url.push_str(&format!("&limit={limit}"));
+        }
+        self.get_json(&url).await
+    }
+
+    pub async fn get_paper_queue_placement(
+        &self,
+        market: &str,
+        owner: &str,
+    ) -> AppResult<serde_json::Value> {
+        let url = format!(
+            "{}/api/paper/house/queue/placement?market={}&owner={}",
+            self.base_url,
+            urlencoding_encode(market),
+            urlencoding_encode(owner)
+        );
+        self.get_json(&url).await
+    }
+
     async fn get_json(&self, url: &str) -> AppResult<serde_json::Value> {
         let response = self
             .client

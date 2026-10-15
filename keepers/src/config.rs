@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// Anvil / Hardhat #0 — same key as paper-bootstrap / local FE default.
+/// Anvil / Hardhat #0 — paper market admin / keeper (not the default trader).
 pub const DEFAULT_KEEPER_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 
