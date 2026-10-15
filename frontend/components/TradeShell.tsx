@@ -11,7 +11,6 @@ import { PaperTicket } from "@/components/PaperTicket";
 import { PositionsPanel } from "@/components/PositionsPanel";
 import { useWallet } from "@/components/WalletProvider";
 import {
-  getAccount,
   getMarkHistory,
   listHistory,
   listMarkets,
@@ -21,6 +20,7 @@ import {
   type PaperPositionHistory,
   type PaperPositionOpen,
 } from "@/lib/api";
+import { getAccountWithUsdcAvailable } from "@/lib/bridge";
 import { isCandleInterval, type ChartView } from "@/lib/chartView";
 import {
   changePctVsPrevDay,
@@ -141,15 +141,7 @@ function TradeBody() {
       setPosError(null);
       const market = selected?.paper_market?.trim() || undefined;
 
-      if (market) {
-        try {
-          setAccount(await getAccount(user, market));
-        } catch {
-          setAccount(null);
-        }
-      } else {
-        setAccount(null);
-      }
+      setAccount(await getAccountWithUsdcAvailable(user, market));
 
       try {
         if (refreshOpens) {

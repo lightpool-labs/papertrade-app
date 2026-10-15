@@ -86,6 +86,21 @@ function prunePoints(pts: RevenuePoint[], cutoff: number): void {
   if (keepFrom > 0) pts.splice(0, keepFrom);
 }
 
+function timeLabel(t: number): string {
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+type HitBar = {
+  t0: number;
+  t1: number;
+  n: number;
+  plotLeft: number;
+  plotW: number;
+  series: { t: number; v: number }[];
+  levels: { t: number; level: number; set: boolean }[];
+};
+
 export function PaperStakingRevenueBars({
   seed = null,
   live,
@@ -93,10 +108,13 @@ export function PaperStakingRevenueBars({
 }: Props) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
   const pointsRef = useRef<RevenuePoint[]>([]);
   const liveRef = useRef<number | null>(null);
   const seedKeyRef = useRef("");
   const drawRef = useRef<() => void>(() => {});
+  const hitRef = useRef<HitBar | null>(null);
+  const hoverIdxRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!seed?.length) {
@@ -137,7 +155,8 @@ export function PaperStakingRevenueBars({
   useEffect(() => {
     const wrap = wrapRef.current;
     const canvas = canvasRef.current;
-    if (!wrap || !canvas) return;
+    const tip = tipRef.current;
+    if (!wrap || !canvas || !tip) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -155,6 +174,27 @@ export function PaperStakingRevenueBars({
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     };
 
+    const placeTip = (clientX: number, clientY: number, html: string) => {
+      tip.innerHTML = html;
+      tip.hidden = false;
+      const tipW = Math.max(tip.offsetWidth, 140);
+      const tipH = Math.max(tip.offsetHeight, 48);
+      let left = clientX + 14;
+      let top = clientY - tipH - 10;
+      if (left + tipW > window.innerWidth - 8) left = clientX - tipW - 14;
+      if (top < 8) top = clientY + 16;
+      left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8));
+      tip.style.left = `${left}px`;
+      tip.style.top = `${top}px`;
+    };
+
+    const hideTip = () => {
+      tip.hidden = true;
+      tip.innerHTML = "";
+      hoverIdxRef.current = null;
+      drawRef.current();
+    };
+
     const draw = () => {
       const now = Date.now();
       const t1 = Math.ceil(now / BUCKET_MS) * BUCKET_MS;
@@ -169,6 +209,7 @@ export function PaperStakingRevenueBars({
       ctx.clearRect(0, 0, W, H);
 
       if (pts.length === 0 && (liveV == null || !Number.isFinite(liveV))) {
+        hitRef.current = null;
         ctx.fillStyle = MUTED;
         ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
         ctx.textAlign = "center";
@@ -209,6 +250,16 @@ export function PaperStakingRevenueBars({
       const yOf = (v: number) => PAD.top + ((hi - v) / (hi - lo)) * plotH;
       const xOf = (i: number) => PAD.left + (i / n) * plotW;
 
+      hitRef.current = {
+        t0,
+        t1,
+        n,
+        plotLeft: PAD.left,
+        plotW,
+        series,
+        levels,
+      };
+
       ctx.strokeStyle = GRID;
       ctx.lineWidth = 1;
       ctx.fillStyle = MUTED;
@@ -231,6 +282,7 @@ export function PaperStakingRevenueBars({
       ctx.clip();
 
       const baseY = yOf(0);
+      const hoverIdx = hoverIdxRef.current;
       for (let i = 0; i < n; i++) {
         const v = series[i].v;
         if (!Number.isFinite(v) || v <= 0) continue;
@@ -239,7 +291,8 @@ export function PaperStakingRevenueBars({
         const top = Math.min(y, baseY);
         const h = Math.max(1, Math.abs(baseY - y));
         const last = i === n - 1;
-        ctx.fillStyle = last ? UP : UP_DIM;
+        const hovered = hoverIdx === i;
+        ctx.fillStyle = hovered ? UP : last ? UP : UP_DIM;
         ctx.fillRect(x, top, barW, h);
       }
       ctx.restore();
@@ -251,12 +304,40 @@ export function PaperStakingRevenueBars({
       const firstLabel = Math.ceil(t0 / TIME_LABEL_MS) * TIME_LABEL_MS;
       for (let t = firstLabel; t <= t1; t += TIME_LABEL_MS) {
         const i = Math.min(n - 1, Math.max(0, Math.floor((t - t0) / BUCKET_MS)));
-        const d = new Date(t);
-        const label = `${String(d.getHours()).padStart(2, "0")}:${String(
-          d.getMinutes(),
-        ).padStart(2, "0")}`;
-        ctx.fillText(label, xOf(i) + barW / 2, H - 6);
+        ctx.fillText(timeLabel(t), xOf(i) + barW / 2, H - 6);
       }
+    };
+
+    const onMove = (e: MouseEvent) => {
+      const hit = hitRef.current;
+      if (!hit || hit.n <= 0) {
+        hideTip();
+        return;
+      }
+      const wr = wrap.getBoundingClientRect();
+      const x = e.clientX - wr.left;
+      if (x < hit.plotLeft || x > hit.plotLeft + hit.plotW) {
+        hideTip();
+        return;
+      }
+      const idx = Math.min(
+        hit.n - 1,
+        Math.max(0, Math.floor(((x - hit.plotLeft) / hit.plotW) * hit.n)),
+      );
+      hoverIdxRef.current = idx;
+      const row = hit.series[idx];
+      const level = hit.levels[idx];
+      const inflow = row?.v ?? 0;
+      const pool = level?.set ? level.level : NaN;
+      placeTip(
+        e.clientX,
+        e.clientY,
+        `<div class="paper-chart-tip-title">Staking revenue</div>
+         <div class="paper-chart-tip-row"><span>Time</span><strong>${timeLabel(row.t)}</strong></div>
+         <div class="paper-chart-tip-row"><span>1m inflow</span><strong>${formatAxisUsd(inflow)}</strong></div>
+         <div class="paper-chart-tip-row"><span>Lifetime fees</span><strong>${Number.isFinite(pool) ? formatAxisUsd(pool) : "—"}</strong></div>`,
+      );
+      draw();
     };
 
     const scheduleMinute = () => {
@@ -276,17 +357,22 @@ export function PaperStakingRevenueBars({
       draw();
     });
     ro.observe(wrap);
+    wrap.addEventListener("mousemove", onMove);
+    wrap.addEventListener("mouseleave", hideTip);
 
     return () => {
       window.clearTimeout(minuteTimer);
       drawRef.current = () => {};
       ro.disconnect();
+      wrap.removeEventListener("mousemove", onMove);
+      wrap.removeEventListener("mouseleave", hideTip);
     };
   }, [windowMs]);
 
   return (
-    <div ref={wrapRef} className="house-oi-curve paper-revenue-bars">
+    <div ref={wrapRef} className="house-oi-curve paper-revenue-bars paper-chart-hover">
       <canvas ref={canvasRef} />
+      <div ref={tipRef} className="paper-chart-tip" hidden />
     </div>
   );
 }

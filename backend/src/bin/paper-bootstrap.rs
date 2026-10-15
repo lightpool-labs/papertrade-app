@@ -5,7 +5,7 @@
 //!
 //! When `USDC_LP` is set (dev.sh Reth bridge path), reuse that bridged LP USDC as
 //! quote instead of `create_token`. Set `SKIP_PAPER_FUND=1` so the demo user funds
-//! Available via Reth → bridge → deposit UI (not admin transfer).
+//! shared LP USDC Available via Reth → bridge (not admin transfer).
 //! Submits via clob-indexer (no direct node RPC). Does **not** call prom_*;
 //! RunningCommittee fills after the first epoch (~1000 blocks) via epoch epilogue.
 
@@ -19,7 +19,7 @@ use lightpool_sdk::{
     extract_market_address_from_events, extract_paper_market_created,
     extract_token_address_from_events, parse_token_contract, ActionBuilder, AllocateStakeParams,
     BondLplParams, CreateMarketParams, CreateTokenParams, InitStakingConfigParams, MarketState,
-    PaperAddInstrumentParams, PaperCreateMarketParams, PaperDepositParams, RegisterValidatorParams,
+    PaperAddInstrumentParams, PaperCreateMarketParams, RegisterValidatorParams,
     SegmentSize, Signer, StakePurpose, TransferParams, TOKEN_SCALE, TransactionBuilder,
 };
 use lightpool_sdk::lightpool_types::SignedTransaction;
@@ -398,7 +398,7 @@ async fn create_paper_market(
         liq_buffer_ppm: 500,
         flat_threshold: 2_000_000_000_000,
         flat_rate_ppm: 100_000_000,
-        tail_decay_scale: 120_000_000_000_000,
+        tail_decay_scale: 1_000_000_000_000,
         staker_cap: 5_000_000_000_000,
         max_oracle_staleness: 100,
     };
@@ -498,65 +498,51 @@ async fn setup_lpl_stake(
     Ok(lpl)
 }
 
-/// Credit `user` paper Available with `amount_usdc` whole USDC (6 decimals).
-/// If `user` is not the admin (USDC holder), transfer USDC first, then `deposit`.
+/// Credit `user` LP USDC (shared Available) with `amount_usdc` whole USDC (6 decimals).
+/// Open pulls margin from token balance; no `deposit_paper` custody step.
 async fn fund_paper_usdc(
     client: &IndexerHttp,
     admin: &Signer,
     user: &Signer,
     usdc: &str,
-    paper_market: &str,
+    _paper_market: &str,
     amount_usdc: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let amount = amount_usdc
         .checked_mul(TOKEN_SCALE)
         .ok_or("paper fund amount overflow")?;
     let usdc_addr = parse_token_contract(usdc)?;
-    let paper = parse_token_contract(paper_market)?;
     let admin_addr = admin.address();
     let user_addr = user.address();
 
-    if user_addr != admin_addr {
-        println!("transfer {amount_usdc} USDC → {user_addr}");
-        let transfer = ActionBuilder::transfer_token(
-            usdc_addr,
-            TransferParams {
-                to: user_addr,
-                amount,
-            },
-        )?;
-        let tx = TransactionBuilder::new()
-            .sender(admin_addr)
-            .expiration(u64::MAX)
-            .add_action(transfer)
-            .build_and_sign_only(admin)?;
-        let response = client.submit(tx).await?;
-        if !response.receipt.is_success() {
-            return Err(format!(
-                "USDC transfer for paper fund failed: {:?}",
-                response.receipt.status
-            )
-            .into());
-        }
+    if user_addr == admin_addr {
+        println!("skip  USDC transfer (user is admin holder)");
+        println!("ok    paper Available = LP USDC for {user_addr}");
+        return Ok(());
     }
 
-    println!("deposit {amount_usdc} USDC into paper Available for {user_addr}");
-    let deposit = ActionBuilder::deposit_paper(paper, PaperDepositParams { amount })?;
+    println!("transfer {amount_usdc} USDC → {user_addr}");
+    let transfer = ActionBuilder::transfer_token(
+        usdc_addr,
+        TransferParams {
+            to: user_addr,
+            amount,
+        },
+    )?;
     let tx = TransactionBuilder::new()
-        .sender(user_addr)
-        .account(user_addr)
+        .sender(admin_addr)
         .expiration(u64::MAX)
-        .add_action(deposit)
-        .build_and_sign_only(user)?;
+        .add_action(transfer)
+        .build_and_sign_only(admin)?;
     let response = client.submit(tx).await?;
     if !response.receipt.is_success() {
         return Err(format!(
-            "paper deposit failed: {:?}",
+            "USDC transfer for paper fund failed: {:?}",
             response.receipt.status
         )
         .into());
     }
-    println!("ok    paper funded {amount_usdc} USDC (P2–P5 local Available)");
+    println!("ok    paper funded {amount_usdc} USDC (shared LP token Available)");
     Ok(())
 }
 

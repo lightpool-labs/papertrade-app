@@ -6,7 +6,6 @@ import { PositionsPanel } from "@/components/PositionsPanel";
 import { AccountStrip } from "@/components/AccountStrip";
 import { useWallet } from "@/components/WalletProvider";
 import {
-  getAccount,
   listHistory,
   listMarkets,
   listPositions,
@@ -15,6 +14,7 @@ import {
   type PaperPositionHistory,
   type PaperPositionOpen,
 } from "@/lib/api";
+import { getAccountWithUsdcAvailable } from "@/lib/bridge";
 import { subscribePaperUser } from "@/lib/paperUserWs";
 
 function PortfolioBody() {
@@ -43,9 +43,7 @@ function PortfolioBody() {
     setError(null);
     try {
       const [acct, pos, hist] = await Promise.all([
-        paperMarket
-          ? getAccount(user, paperMarket)
-          : Promise.resolve(null as PaperAccount | null),
+        getAccountWithUsdcAvailable(user, paperMarket),
         listPositions(user, { market: paperMarket, status: "all" }),
         listHistory(user, paperMarket),
       ]);

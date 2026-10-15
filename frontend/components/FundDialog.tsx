@@ -95,8 +95,8 @@ export function FundDialog({
 
         <p className="fund-dialog-hint">
           {kind === "deposit"
-            ? "MetaMask: approve + transfer to bridge. Paper Available is credited by your agent."
-            : "Move Available to LP wallet, then bridge out when configured."}
+            ? "MetaMask: approve + transfer to bridge. Credits shared USDC Available (paper / spot / event)."
+            : "Bridge USDC from LightPool back to your EVM wallet."}
         </p>
 
         {status ? <p className="fund-status">{status}</p> : null}

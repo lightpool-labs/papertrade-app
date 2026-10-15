@@ -7,7 +7,7 @@
 //! Standalone CLI — not wired into `scripts/dev.sh`.
 //!
 //! Funding (--fund-usdc > 0): admin bridge-deposits Reth USDC (minted in
-//! scripts/dev.sh) into LightPool → transfers to workers → deposit_paper.
+//! scripts/dev.sh) into LightPool → transfers to workers (open uses LP USDC).
 //! Requires eth-bridge.json + running Reth/bridge + admin Reth USDC.
 //!
 //! Example:
@@ -28,12 +28,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use futures_util::{future::try_join_all, stream, SinkExt, StreamExt, TryStreamExt};
-use tokio::sync::Semaphore;
+use futures_util::{future::try_join_all, SinkExt, StreamExt};
 use lightpool_sdk::lightpool_types::SignedTransaction;
 use lightpool_sdk::{
     extract_paper_opened, parse_token_contract, ActionBuilder, PaperCloseParams,
-    PaperDepositParams, PaperOpenParams, Signer, TransactionBuilder, TransferParams, TOKEN_SCALE,
+    PaperOpenParams, Signer, TransactionBuilder, TransferParams, TOKEN_SCALE,
 };
 use std::process::Command;
 use rand::rngs::StdRng;
@@ -145,7 +144,7 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     take_profit_batch: u32,
 
-    /// Concurrent paper-deposit submits while funding (transfers are batched).
+    /// Kept for CLI compat (paper deposit step removed; transfers are batched).
     #[arg(long, default_value_t = 512)]
     fund_concurrency: u32,
 
@@ -570,9 +569,7 @@ async fn fund_workers(
     admin_key: &str,
     workers: Arc<Vec<Signer>>,
     usdc: &str,
-    paper_market: &str,
     amount_usdc: u64,
-    concurrency: usize,
     reth_rpc: &str,
     bridge: &BridgeStateFile,
 ) -> Result<()> {
@@ -580,7 +577,6 @@ async fn fund_workers(
         .checked_mul(TOKEN_SCALE)
         .context("fund amount overflow")?;
     let usdc_addr = parse_token_contract(usdc).map_err(|e| anyhow::anyhow!("usdc: {e}"))?;
-    let paper = parse_token_contract(paper_market).map_err(|e| anyhow::anyhow!("paper: {e}"))?;
     let admin_addr = admin.address();
     let admin_addr_s = admin_addr.to_string();
     let t0 = Instant::now();
@@ -665,56 +661,10 @@ async fn fund_workers(
         elapsed_ms = t0.elapsed().as_millis() as u64,
         "fund transfers done"
     );
-
-    let concurrency = concurrency.max(1);
-    let sem = Arc::new(Semaphore::new(concurrency));
-    let done = Arc::new(AtomicU64::new(0));
-    let total = workers.len() as u64;
-    let n_workers = workers.len();
-    stream::iter(0..n_workers)
-        .map(|i| {
-            let client = client.clone();
-            let sem = Arc::clone(&sem);
-            let done = Arc::clone(&done);
-            let workers = Arc::clone(&workers);
-            async move {
-                let _permit = sem
-                    .acquire()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("fund semaphore: {e}"))?;
-                let user = &workers[i];
-                let user_addr = user.address();
-                let deposit = ActionBuilder::deposit_paper(paper, PaperDepositParams { amount })
-                    .context("build deposit")?;
-                let tx = TransactionBuilder::new()
-                    .sender(user_addr)
-                    .account(user_addr)
-                    .expiration(u64::MAX)
-                    .add_action(deposit)
-                    .build_and_sign_only(user)
-                    .context("sign deposit")?;
-                let response = client.submit(tx).await?;
-                if !response.receipt.is_success() {
-                    bail!(
-                        "paper deposit for worker {i} ({user_addr}) failed: {:?}",
-                        response.receipt.status
-                    );
-                }
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if n % 100 == 0 || n == total {
-                    tracing::info!(done = n, total, "fund deposit progress");
-                }
-                Ok::<(), anyhow::Error>(())
-            }
-        })
-        .buffer_unordered(concurrency)
-        .try_collect::<Vec<()>>()
-        .await
-        .context("paper deposits")?;
     tracing::info!(
-        accounts = n_workers,
+        accounts = workers.len(),
         elapsed_ms = t0.elapsed().as_millis() as u64,
-        "fund workers done"
+        "fund workers done (LP USDC only; open pulls margin from token balance)"
     );
     Ok(())
 }
@@ -1216,17 +1166,12 @@ async fn main() -> Result<()> {
         if usdc.is_empty() {
             bail!("bootstrap.json missing usdc");
         }
-        let paper = if bootstrap.paper_market.trim().is_empty() {
-            paper_market.as_str()
-        } else {
-            bootstrap.paper_market.trim()
-        };
+        let _ = args.fund_concurrency;
         tracing::info!(
             accounts = args.accounts,
             fund_usdc = args.fund_usdc,
-            fund_concurrency = args.fund_concurrency,
             reth_rpc = %args.reth_rpc,
-            "funding: admin Reth→LP deposit → LP transfer → paper deposit"
+            "funding: admin Reth→LP deposit → LP transfer to workers"
         );
         fund_workers(
             &client,
@@ -1234,9 +1179,7 @@ async fn main() -> Result<()> {
             &args.admin_key,
             Arc::clone(&workers),
             usdc,
-            paper,
             args.fund_usdc,
-            args.fund_concurrency.max(1) as usize,
             &args.reth_rpc,
             &bridge,
         )

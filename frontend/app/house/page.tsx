@@ -66,7 +66,14 @@ function metricFromHouse(next: PaperHouse, t: number): HouseMetricPoint | null {
   ) {
     return null;
   }
-  return { t, house_funds, lp_balance, open_house_pnl, queue_debt };
+  return {
+    t,
+    house_funds,
+    lp_balance,
+    open_house_pnl,
+    house_before_payouts: lp_balance + open_house_pnl,
+    queue_debt,
+  };
 }
 
 function HouseBody() {
@@ -152,115 +159,115 @@ function HouseBody() {
       try {
         const next = await getHouse(market);
         applyHouse(next, Date.now());
+        // Paint house stats immediately; chart history loads in the background.
+        setLoading(false);
+
         const prefer =
           next.instruments.find((i) => i.name.toUpperCase() === "BTC") ??
           next.instruments[0];
         const instrument = prefer?.instrument ?? 0;
-        try {
-          const hist = await getHouseOiHistory(market, {
-            instrument,
-            fromMs: Date.now() - 10 * 60_000,
-            limit: 600,
-          });
-          const points = (hist.ticks ?? [])
-            .map((tick) => {
-              const long = parseAmount(tick.long);
-              const short = parseAmount(tick.short);
-              const t = Number(tick.t);
-              if (
-                !Number.isFinite(long) ||
-                !Number.isFinite(short) ||
-                !Number.isFinite(t) ||
-                t <= 0
-              ) {
-                return null;
-              }
-              return { t, long, short };
-            })
-            .filter((row): row is OiPoint => row != null)
-            .sort((a, b) => a.t - b.t);
-          if (points.length) {
-            setOiSeed(points);
-          }
-          if (hist.name?.trim()) setOiName(hist.name.trim());
-        } catch {
-          // keep seed from applyHouse
-        }
-        try {
-          // Full 1h window (~1 tick/sec → up to 3600). limit:600 only kept ~10m.
-          const houseHist = await getHouseHistory(market, {
-            fromMs: Date.now() - HOUSE_METRIC_WINDOW_MS,
-            limit: 3600,
-          });
-          const points = (houseHist.ticks ?? [])
-            .map((tick) => {
-              const house_funds =
-                Number.isFinite(tick.house_funds_raw)
-                  ? tick.house_funds_raw / 1_000_000
-                  : parseAmount(tick.house_funds);
-              const lp_balance =
-                Number.isFinite(tick.lp_balance_raw)
-                  ? tick.lp_balance_raw / 1_000_000
-                  : parseAmount(tick.lp_balance);
-              const open_house_pnl =
-                Number.isFinite(tick.open_house_pnl_raw)
-                  ? tick.open_house_pnl_raw / 1_000_000
-                  : parseAmount(tick.open_house_pnl);
-              const queue_debt =
-                Number.isFinite(tick.queue_debt_raw)
-                  ? tick.queue_debt_raw / 1_000_000
-                  : parseAmount(tick.queue_debt);
-              const t = Number(tick.t);
-              if (
-                !Number.isFinite(house_funds) ||
-                !Number.isFinite(lp_balance) ||
-                !Number.isFinite(open_house_pnl) ||
-                !Number.isFinite(queue_debt) ||
-                !Number.isFinite(t) ||
-                t <= 0
-              ) {
-                return null;
-              }
-              return {
-                t,
-                house_funds,
-                lp_balance,
-                open_house_pnl,
-                queue_debt,
-              };
-            })
-            .filter((row): row is HouseMetricPoint => row != null)
-            .sort((a, b) => a.t - b.t);
-          if (points.length) {
-            setMetricSeed(points);
-            setDebtSeed(points.map((p) => ({ t: p.t, debt: p.queue_debt })));
-          }
-        } catch {
+
+        void (async () => {
           try {
-            const debtHist = await getHouseDebtHistory(market, {
-              fromMs: Date.now() - HOUSE_DEBT_WINDOW_MS,
-              limit: 3600,
+            const hist = await getHouseOiHistory(market, {
+              instrument,
+              fromMs: Date.now() - 10 * 60_000,
+              limit: 600,
             });
-            const points = (debtHist.ticks ?? [])
+            const points = (hist.ticks ?? [])
               .map((tick) => {
-                const debt = parseAmount(tick.debt);
+                const long = parseAmount(tick.long);
+                const short = parseAmount(tick.short);
                 const t = Number(tick.t);
-                if (!Number.isFinite(debt) || !Number.isFinite(t) || t <= 0) {
+                if (
+                  !Number.isFinite(long) ||
+                  !Number.isFinite(short) ||
+                  !Number.isFinite(t) ||
+                  t <= 0
+                ) {
                   return null;
                 }
-                return { t, debt };
+                return { t, long, short };
               })
-              .filter((row): row is DebtPoint => row != null)
+              .filter((row): row is OiPoint => row != null)
               .sort((a, b) => a.t - b.t);
-            if (points.length) setDebtSeed(points);
+            if (points.length) setOiSeed(points);
+            if (hist.name?.trim()) setOiName(hist.name.trim());
           } catch {
             // keep seed from applyHouse
           }
-        }
+
+          try {
+            const houseHist = await getHouseHistory(market, {
+              fromMs: Date.now() - HOUSE_METRIC_WINDOW_MS,
+              limit: 3600,
+            });
+            const points = (houseHist.ticks ?? [])
+              .map((tick) => {
+                const house_funds = Number.isFinite(tick.house_funds_raw)
+                  ? tick.house_funds_raw / 1_000_000
+                  : parseAmount(tick.house_funds);
+                const lp_balance = Number.isFinite(tick.lp_balance_raw)
+                  ? tick.lp_balance_raw / 1_000_000
+                  : parseAmount(tick.lp_balance);
+                const open_house_pnl = Number.isFinite(tick.open_house_pnl_raw)
+                  ? tick.open_house_pnl_raw / 1_000_000
+                  : parseAmount(tick.open_house_pnl);
+                const queue_debt = Number.isFinite(tick.queue_debt_raw)
+                  ? tick.queue_debt_raw / 1_000_000
+                  : parseAmount(tick.queue_debt);
+                const t = Number(tick.t);
+                if (
+                  !Number.isFinite(house_funds) ||
+                  !Number.isFinite(lp_balance) ||
+                  !Number.isFinite(open_house_pnl) ||
+                  !Number.isFinite(queue_debt) ||
+                  !Number.isFinite(t) ||
+                  t <= 0
+                ) {
+                  return null;
+                }
+                return {
+                  t,
+                  house_funds,
+                  lp_balance,
+                  open_house_pnl,
+                  house_before_payouts: lp_balance + open_house_pnl,
+                  queue_debt,
+                };
+              })
+              .filter((row): row is HouseMetricPoint => row != null)
+              .sort((a, b) => a.t - b.t);
+            if (points.length) {
+              setMetricSeed(points);
+              setDebtSeed(points.map((p) => ({ t: p.t, debt: p.queue_debt })));
+            }
+          } catch {
+            try {
+              const debtHist = await getHouseDebtHistory(market, {
+                fromMs: Date.now() - HOUSE_DEBT_WINDOW_MS,
+                limit: 3600,
+              });
+              const points = (debtHist.ticks ?? [])
+                .map((tick) => {
+                  const debt = parseAmount(tick.debt);
+                  const t = Number(tick.t);
+                  if (!Number.isFinite(debt) || !Number.isFinite(t) || t <= 0) {
+                    return null;
+                  }
+                  return { t, debt };
+                })
+                .filter((row): row is DebtPoint => row != null)
+                .sort((a, b) => a.t - b.t);
+              if (points.length) setDebtSeed(points);
+            } catch {
+              // keep seed from applyHouse
+            }
+          }
+        })();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load house");
         setHouse(null);
-      } finally {
         setLoading(false);
       }
     },
@@ -279,17 +286,42 @@ function HouseBody() {
   useEffect(() => {
     if (!paperMarket) return;
     void loadSnapshot(paperMarket);
+
+    // Apply house WS at most once per second (keep latest tick).
+    const REDRAW_MS = 1_000;
+    let timer = 0;
+    let lastFlush = 0;
+    let pending: { house: PaperHouse; tsMs: number } | null = null;
+
+    const flush = () => {
+      const p = pending;
+      pending = null;
+      if (!p) return;
+      lastFlush = Date.now();
+      applyHouse(p.house, p.tsMs);
+      setLoading(false);
+      setError(null);
+    };
+
     const unsub = subscribePaperHouse(paperMarket, {
       onHouse: (house, tsMs) => {
-        applyHouse(house, tsMs);
-        setLoading(false);
-        setError(null);
+        pending = { house, tsMs };
+        if (timer) return;
+        const wait = Math.max(0, REDRAW_MS - (Date.now() - lastFlush));
+        timer = window.setTimeout(() => {
+          timer = 0;
+          flush();
+        }, wait);
       },
       onError: (err) => {
         setError(err.message);
       },
     });
-    return () => unsub();
+    return () => {
+      unsub();
+      if (timer) window.clearTimeout(timer);
+      pending = null;
+    };
   }, [paperMarket, loadSnapshot, applyHouse]);
 
   useEffect(() => {

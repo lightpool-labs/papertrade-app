@@ -166,25 +166,58 @@ function PaperBody() {
         setLoading(false);
       });
 
-    return subscribePaperStake(paperMarket, user, {
+    // Redraw at most once per second; keep the latest WS tick until then.
+    const REDRAW_MS = 1_000;
+    let timer = 0;
+    let lastFlush = 0;
+    let pending: {
+      next: PaperStake;
+      tick: {
+        staking_revenue_raw?: number;
+        total_paper_supply_raw?: number;
+        total_staking_reward_raw?: number;
+      };
+      tsMs: number;
+    } | null = null;
+
+    const flush = () => {
+      const p = pending;
+      pending = null;
+      if (!p) return;
+      lastFlush = Date.now();
+      applyStake(p.next, p.tsMs);
+      const hist: PaperStakeHistoryPoint = {
+        t: p.tsMs,
+        staking_revenue: Number(p.tick.staking_revenue_raw ?? 0) / 1_000_000,
+        total_paper_supply:
+          Number(p.tick.total_paper_supply_raw ?? 0) / 1_000_000,
+        total_staking_reward:
+          Number(p.tick.total_staking_reward_raw ?? 0) / 1_000_000,
+      };
+      setLiveHistory((prev) => (historyEqual(prev, hist) ? prev : hist));
+      setLoading(false);
+      setError(null);
+    };
+
+    const unsub = subscribePaperStake(paperMarket, user, {
       onStake: (next, tick, tsMs) => {
-        applyStake(next, tsMs);
-        const hist: PaperStakeHistoryPoint = {
-          t: tsMs,
-          staking_revenue: Number(tick.staking_revenue_raw ?? 0) / 1_000_000,
-          total_paper_supply:
-            Number(tick.total_paper_supply_raw ?? 0) / 1_000_000,
-          total_staking_reward:
-            Number(tick.total_staking_reward_raw ?? 0) / 1_000_000,
-        };
-        setLiveHistory((prev) => (historyEqual(prev, hist) ? prev : hist));
-        setLoading(false);
-        setError(null);
+        pending = { next, tick, tsMs };
+        if (timer) return;
+        const wait = Math.max(0, REDRAW_MS - (Date.now() - lastFlush));
+        timer = window.setTimeout(() => {
+          timer = 0;
+          flush();
+        }, wait);
       },
       onError: (err) => {
         setError(err.message);
       },
     });
+    return () => {
+      unsub();
+      if (timer) window.clearTimeout(timer);
+      pending = null;
+    };
   }, [paperMarket, address, applyStake]);
 
   const revenueSeed = useMemo((): RevenuePoint[] | null => {

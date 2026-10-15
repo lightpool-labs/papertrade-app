@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useTransition } from "react";
 import { useWallet } from "@/components/WalletProvider";
 import { shortAddress } from "@/lib/wallet";
 
@@ -13,14 +14,16 @@ const LINKS = [
 
 export function TopBar() {
   const pathname = usePathname();
-  const { address, busy, error, connect, disconnect, reauth } = useWallet();
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const { address, busy, error, connect } = useWallet();
 
   return (
     <header className="topbar">
       <Link href="/trade/btc" className="logo">
         Papertrader
       </Link>
-      <nav className="nav-links">
+      <nav className="nav-links" aria-busy={pending || undefined}>
         {LINKS.map((link) => {
           const active =
             pathname === link.href ||
@@ -29,7 +32,25 @@ export function TopBar() {
             <Link
               key={link.href}
               href={link.href}
+              prefetch
               className={`nav-link${active ? " active" : ""}`}
+              onClick={(e) => {
+                if (
+                  e.metaKey ||
+                  e.ctrlKey ||
+                  e.shiftKey ||
+                  e.altKey ||
+                  e.button !== 0
+                ) {
+                  return;
+                }
+                e.preventDefault();
+                if (active && !link.href.startsWith("/trade")) return;
+                // Yield past Paper WS/chart work so the route change is not starved.
+                startTransition(() => {
+                  router.push(link.href);
+                });
+              }}
             >
               {link.label}
             </Link>
@@ -37,46 +58,17 @@ export function TopBar() {
         })}
       </nav>
       <div className="topbar-spacer" />
-      <div className="wallet-actions">
-        {address ? (
-          <>
-            <span className="wallet-addr" title={address}>
-              {shortAddress(address)}
-            </span>
-            <button
-              type="button"
-              className="connect-btn"
-              disabled={busy}
-              title="New agent + MetaMask set_agent"
-              onClick={() => {
-                void reauth().catch(() => undefined);
-              }}
-            >
-              {busy ? "Signing…" : "Reauth"}
-            </button>
-            <button
-              type="button"
-              className="connect-btn"
-              disabled={busy}
-              onClick={disconnect}
-            >
-              Disconnect
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="connect-btn"
-            disabled={busy}
-            title={error ?? "Connect MetaMask + authorize agent"}
-            onClick={() => {
-              void connect().catch(() => undefined);
-            }}
-          >
-            {busy ? "Connecting…" : "Connect"}
-          </button>
-        )}
-      </div>
+      <button
+        type="button"
+        className="connect-btn"
+        disabled={busy}
+        title={error ?? (address ? address : "Connect MetaMask")}
+        onClick={() => {
+          void connect().catch(() => undefined);
+        }}
+      >
+        {address ? shortAddress(address) : busy ? "Connecting…" : "Connect"}
+      </button>
     </header>
   );
 }

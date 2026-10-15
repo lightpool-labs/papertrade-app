@@ -19,7 +19,6 @@ import {
   prepareBridgeWithdraw,
   preparePaperClaim,
   preparePaperClose,
-  preparePaperDeposit,
   preparePaperOpen,
   preparePaperStake,
   preparePaperUnstake,
@@ -315,45 +314,33 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   );
 
   const deposit = useCallback(
-    async (paperMarket: string, amount: string) => {
+    async (_paperMarket: string, amount: string) => {
       begin();
       try {
-        const market = paperMarket.trim();
-        if (!market) throw new Error("paper market is required");
         const account = await requireAccount();
         const amountRaw = parseAmount6(amount);
-        const amountHuman = amount.trim();
 
-        // MetaMask ×2 only: approve + bridge transfer (same as stocks).
+        // MetaMask ×2: approve + bridge transfer. Available = LP USDC (shared).
         const bridge = await getBridge();
         const usdc = bridge.configured ? findUsdcToken(bridge) : null;
-        if (bridge.configured && usdc) {
-          await ensureRethChain(bridge.evm_chain_id, bridge.evm_rpc);
-          let before = 0;
-          try {
-            const entries = await fetchBalances(account, [usdc]);
-            before = parseAvailableRaw(entries[0]);
-          } catch {
-            before = 0;
-          }
-          await depositToken({
-            from: account,
-            token: usdc.evm,
-            bridge: bridge.evm_bridge,
-            amount: amountRaw,
-          });
-          await waitForLpCredit(account, usdc, before, Number(amountRaw) / 1e6);
+        if (!bridge.configured || !usdc) {
+          throw new Error("bridge / USDC is not configured");
         }
-
-        // Credit paper Available via session agent (no 3rd MetaMask popup).
-        const agent = await requireAgent(account);
-        const prepared = await preparePaperDeposit({
-          user: account,
-          agent: agent.address,
-          market,
-          amount: amountHuman,
+        await ensureRethChain(bridge.evm_chain_id, bridge.evm_rpc);
+        let before = 0;
+        try {
+          const entries = await fetchBalances(account, [usdc]);
+          before = parseAvailableRaw(entries[0]);
+        } catch {
+          before = 0;
+        }
+        await depositToken({
+          from: account,
+          token: usdc.evm,
+          bridge: bridge.evm_bridge,
+          amount: amountRaw,
         });
-        await signWithAgent(account, prepared);
+        await waitForLpCredit(account, usdc, before, Number(amountRaw) / 1e6);
       } catch (err) {
         const wrapped = walletError(err);
         setError(wrapped.message);
@@ -362,7 +349,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         end();
       }
     },
-    [begin, end, requireAccount, requireAgent, signWithAgent],
+    [begin, end, requireAccount],
   );
 
   const withdraw = useCallback(
@@ -370,39 +357,51 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       begin();
       try {
         const market = paperMarket.trim();
-        if (!market) throw new Error("paper market is required");
         const account = await requireAccount();
         const amountHuman = amount.trim();
 
-        const prepared = await preparePaperWithdraw({
-          user: account,
-          market,
-          amount: amountHuman,
-        });
-        const signature = await signLightPoolTx(account, prepared.eip712);
-        await submitSignedTx(
-          prepared.unsigned_tx_hex,
-          signature,
-          prepared.auth_scheme ?? "eip712",
-        );
+        // One-shot migrate: sweep leftover PaperAccount.available if any.
+        if (market) {
+          try {
+            const { getAccount } = await import("@/lib/api");
+            const paper = await getAccount(account, market);
+            const leftover = Number(paper.available_raw);
+            if (Number.isFinite(leftover) && leftover > 0) {
+              const prepared = await preparePaperWithdraw({
+                user: account,
+                market,
+                amount: paper.available,
+              });
+              const signature = await signLightPoolTx(account, prepared.eip712);
+              await submitSignedTx(
+                prepared.unsigned_tx_hex,
+                signature,
+                prepared.auth_scheme ?? "eip712",
+              );
+            }
+          } catch {
+            // No legacy paper custody — bridge only.
+          }
+        }
 
         const bridge = await getBridge();
         const usdc = bridge.configured ? findUsdcToken(bridge) : null;
-        if (bridge.configured && usdc) {
-          const bridgePrep = await prepareBridgeWithdraw({
-            user: account,
-            token: usdc.lp,
-            amount: amountHuman,
-            inbound: usdc.inbound,
-            foreign_recipient: account,
-          });
-          const bridgeSig = await signLightPoolTx(account, bridgePrep.eip712);
-          await submitSignedTx(
-            bridgePrep.unsigned_tx_hex,
-            bridgeSig,
-            bridgePrep.auth_scheme ?? "eip712",
-          );
+        if (!bridge.configured || !usdc) {
+          throw new Error("bridge / USDC is not configured");
         }
+        const bridgePrep = await prepareBridgeWithdraw({
+          user: account,
+          token: usdc.lp,
+          amount: amountHuman,
+          inbound: usdc.inbound,
+          foreign_recipient: account,
+        });
+        const bridgeSig = await signLightPoolTx(account, bridgePrep.eip712);
+        await submitSignedTx(
+          bridgePrep.unsigned_tx_hex,
+          bridgeSig,
+          bridgePrep.auth_scheme ?? "eip712",
+        );
       } catch (err) {
         const wrapped = walletError(err);
         setError(wrapped.message);

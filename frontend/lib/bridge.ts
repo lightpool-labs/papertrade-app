@@ -1,4 +1,5 @@
-import { API_URL } from "@/lib/api";
+import { API_URL, getAccount, type PaperAccount } from "@/lib/api";
+import { parseAmount } from "@/lib/math";
 import type { Eip712Payload } from "@/lib/wallet";
 
 const CLOB_INDEX_URL =
@@ -244,4 +245,70 @@ export function parseAvailableRaw(entry: BalanceEntry | undefined): number {
   if (!entry) return 0;
   const n = Number(entry.available);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** Paper Available = shared LP USDC token balance (same as spot/event). */
+export async function getAccountWithUsdcAvailable(
+  address: string,
+  market?: string,
+): Promise<PaperAccount | null> {
+  let paper: PaperAccount | null = null;
+  if (market?.trim()) {
+    try {
+      paper = await getAccount(address, market);
+    } catch {
+      paper = null;
+    }
+  }
+
+  let usdcHuman: number | null = null;
+  try {
+    const bridge = await getBridge();
+    const usdc = bridge.configured ? findUsdcToken(bridge) : null;
+    if (usdc) {
+      const entries = await fetchBalances(address, [usdc]);
+      // Indexer balances already return human amounts (format_token_amount).
+      usdcHuman = parseAvailableRaw(entries[0]);
+    }
+  } catch {
+    usdcHuman = null;
+  }
+
+  if (usdcHuman == null) return paper;
+  if (!paper) {
+    return {
+      market: market?.trim() ?? "",
+      address,
+      available: String(usdcHuman),
+      queued: "0",
+      available_raw: Math.round(usdcHuman * 1e6),
+      queued_raw: 0,
+      entry_head: 0,
+      entry_tail: 0,
+      queued_truncated: false,
+      margin_in_use: "0",
+      margin_in_use_raw: 0,
+      open_pnl: "0",
+      open_pnl_raw: 0,
+      equity: String(usdcHuman),
+      equity_raw: Math.round(usdcHuman * 1e6),
+      open_positions: 0,
+    };
+  }
+
+  const queued = parseAmount(paper.queued);
+  const margin = parseAmount(paper.margin_in_use);
+  const openPnl = parseAmount(paper.open_pnl);
+  const equity =
+    usdcHuman +
+    (Number.isFinite(queued) ? queued : 0) +
+    (Number.isFinite(margin) ? margin : 0) +
+    (Number.isFinite(openPnl) ? openPnl : 0);
+  return {
+    ...paper,
+    available: String(usdcHuman),
+    available_raw: Math.round(usdcHuman * 1e6),
+    equity: String(equity),
+    equity_raw: Math.round(equity * 1e6),
+  };
 }

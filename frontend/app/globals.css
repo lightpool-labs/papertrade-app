@@ -1813,6 +1813,52 @@ button {
   height: 100%;
 }
 
+.paper-chart-hover {
+  position: relative;
+  cursor: crosshair;
+}
+
+.paper-chart-tip {
+  position: fixed;
+  z-index: 40;
+  min-width: 160px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #d1d5db);
+  background: var(--bg-panel, #ffffff);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.paper-chart-tip[hidden] {
+  display: none;
+}
+
+.paper-chart-tip-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.paper-chart-tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.paper-chart-tip-row span {
+  color: var(--text-muted);
+}
+
+.paper-chart-tip-row strong {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 600;
+}
+
 .house-card {
   display: flex;
   flex-direction: column;

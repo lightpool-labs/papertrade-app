@@ -68,7 +68,8 @@ export function HouseDebtCurve({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    let raf = 0;
+    const REDRAW_MS = 1_000;
+    let timer = 0;
     let alive = true;
 
     const resize = () => {
@@ -82,10 +83,6 @@ export function HouseDebtCurve({
       canvas.style.height = `${h}px`;
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     };
-
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(wrap);
 
     const frame = () => {
       if (!alive) return;
@@ -103,7 +100,6 @@ export function HouseDebtCurve({
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText("Waiting for queue debt…", W / 2, H / 2);
-        raf = requestAnimationFrame(frame);
         return;
       }
 
@@ -145,7 +141,6 @@ export function HouseDebtCurve({
       const drawn = dedupeByTime(series);
 
       if (drawn.length === 0) {
-        raf = requestAnimationFrame(frame);
         return;
       }
 
@@ -232,13 +227,28 @@ export function HouseDebtCurve({
         ctx.fillText(label, xOf(t), H - 8);
       }
 
-      raf = requestAnimationFrame(frame);
     };
 
-    raf = requestAnimationFrame(frame);
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        if (!alive) return;
+        frame();
+        schedule();
+      }, REDRAW_MS);
+    };
+
+    resize();
+    frame();
+    schedule();
+    const ro = new ResizeObserver(() => {
+      resize();
+      frame();
+    });
+    ro.observe(wrap);
+
     return () => {
       alive = false;
-      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
       ro.disconnect();
     };
   }, [windowMs]);

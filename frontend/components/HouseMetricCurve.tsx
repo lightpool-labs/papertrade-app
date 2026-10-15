@@ -7,13 +7,16 @@ export type HouseMetricKey =
   | "house_funds"
   | "lp_balance"
   | "open_house_pnl"
-  | "queue_debt";
+  | "house_before_payouts";
 
 export type HouseMetricPoint = {
   t: number;
   house_funds: number;
   lp_balance: number;
   open_house_pnl: number;
+  /** lp_balance + open_house_pnl (before subtracting queue debt). */
+  house_before_payouts: number;
+  /** Kept for Queue Debt chart seeding; not a dropdown metric. */
   queue_debt: number;
 };
 
@@ -24,7 +27,7 @@ export const HOUSE_METRIC_OPTIONS: { key: HouseMetricKey; label: string }[] = [
   { key: "house_funds", label: "House Funds" },
   { key: "lp_balance", label: "LP Balance" },
   { key: "open_house_pnl", label: "Open House PnL" },
-  { key: "queue_debt", label: "Queue Debt" },
+  { key: "house_before_payouts", label: "House before payouts" },
 ];
 
 type Props = {
@@ -56,7 +59,15 @@ function dedupeByTime(points: HouseMetricPoint[]): HouseMetricPoint[] {
 }
 
 function pick(p: HouseMetricPoint, metric: HouseMetricKey): number {
-  return p[metric];
+  if (metric === "house_before_payouts") {
+    if (Number.isFinite(p.house_before_payouts)) return p.house_before_payouts;
+    const derived = p.lp_balance + p.open_house_pnl;
+    if (Number.isFinite(derived)) return derived;
+    const alt = p.house_funds + p.queue_debt;
+    return Number.isFinite(alt) ? alt : NaN;
+  }
+  const v = p[metric];
+  return Number.isFinite(v) ? v : NaN;
 }
 
 export function HouseMetricCurve({
@@ -84,7 +95,7 @@ export function HouseMetricCurve({
       return;
     }
     const last = seed[seed.length - 1];
-    const key = `${seed[0].t}:${last.t}:${seed.length}:${last.house_funds}:${last.lp_balance}:${last.open_house_pnl}:${last.queue_debt}`;
+    const key = `${seed[0].t}:${last.t}:${seed.length}:${last.house_funds}:${last.lp_balance}:${last.open_house_pnl}:${last.house_before_payouts}:${last.queue_debt}`;
     if (seedKeyRef.current === key) return;
     seedKeyRef.current = key;
     pointsRef.current = dedupeByTime(seed);
@@ -111,7 +122,8 @@ export function HouseMetricCurve({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    let raf = 0;
+    const REDRAW_MS = 1_000;
+    let timer = 0;
     let alive = true;
 
     const resize = () => {
@@ -125,10 +137,6 @@ export function HouseMetricCurve({
       canvas.style.height = `${h}px`;
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     };
-
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(wrap);
 
     const frame = () => {
       if (!alive) return;
@@ -147,7 +155,6 @@ export function HouseMetricCurve({
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText("Waiting for house metrics…", W / 2, H / 2);
-        raf = requestAnimationFrame(frame);
         return;
       }
 
@@ -188,7 +195,6 @@ export function HouseMetricCurve({
 
       const drawn = dedupeByTime(series);
       if (drawn.length === 0) {
-        raf = requestAnimationFrame(frame);
         return;
       }
 
@@ -323,13 +329,28 @@ export function HouseMetricCurve({
         ctx.fillText(label, xOf(t), H - 8);
       }
 
-      raf = requestAnimationFrame(frame);
     };
 
-    raf = requestAnimationFrame(frame);
+    const schedule = () => {
+      timer = window.setTimeout(() => {
+        if (!alive) return;
+        frame();
+        schedule();
+      }, REDRAW_MS);
+    };
+
+    resize();
+    frame();
+    schedule();
+    const ro = new ResizeObserver(() => {
+      resize();
+      frame();
+    });
+    ro.observe(wrap);
+
     return () => {
       alive = false;
-      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
       ro.disconnect();
     };
   }, [windowMs]);
