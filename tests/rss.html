@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Process RSS</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101114;
+      --panel: #181a20;
+      --line: #2a2e38;
+      --text: #e8eaef;
+      --muted: #9aa1ad;
+      --mark: #f2c14e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.4 ui-sans-serif, system-ui, sans-serif;
+    }
+    header, main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    p { margin: 0; color: var(--muted); }
+    .drop {
+      margin-top: 16px;
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      padding: 18px;
+      background: var(--panel);
+    }
+    input[type="file"] { color: var(--muted); }
+    .layout { display: grid; grid-template-columns: 1fr 280px; gap: 16px; margin-top: 16px; }
+    canvas {
+      width: 100%;
+      height: 460px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--muted); font-weight: 500; }
+    tr.off { opacity: 0.35; }
+    tr { cursor: pointer; }
+    .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+    .eat { color: #ff8b7b; }
+    .note { margin-top: 10px; color: var(--muted); }
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Process RSS</h1>
+    <p>Drop <code>data/papertrader/logs/rss.csv</code>. The gold line is the first sample at or above the open-position mark (default 10k).</p>
+    <div class="drop" id="drop">
+      <input id="file" type="file" accept=".csv,text/csv,text/plain" />
+    </div>
+  </header>
+  <main>
+    <div class="layout">
+      <canvas id="chart" width="800" height="460"></canvas>
+      <div>
+        <table>
+          <thead>
+            <tr><th>Process</th><th>At mark</th><th>Latest</th><th>After</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <p class="note" id="note"></p>
+      </div>
+    </div>
+  </main>
+  <script>
+    const NAMES = ["lightpool", "bridge", "indexer", "oracle", "backend", "frontend", "keeper", "hold_opens"];
+    const LABEL = { hold_opens: "hold-opens" };
+    const COLOR = {
+      bridge: "#9ece6a",
+      lightpool: "#bb9af7",
+      indexer: "#f7768e",
+      oracle: "#e0af68",
+      backend: "#7dcfff",
+      frontend: "#ff9e64",
+      keeper: "#73daca",
+      hold_opens: "#c0caf5",
+    };
+    const hidden = new Set();
+    let samples = [];
+    let mark = 10000;
+    let markIndex = -1;
+
+    const fileInput = document.getElementById("file");
+    const drop = document.getElementById("drop");
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) readFile(file);
+    });
+    drop.addEventListener("dragover", (ev) => ev.preventDefault());
+    drop.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      const file = ev.dataTransfer.files && ev.dataTransfer.files[0];
+      if (file) readFile(file);
+    });
+
+    function readFile(file) {
+      const reader = new FileReader();
+      reader.onload = () => parse(String(reader.result || ""));
+      reader.readAsText(file);
+    }
+
+    function parse(text) {
+      samples = [];
+      mark = 10000;
+      hidden.clear();
+      for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) continue;
+        if (line.startsWith("#")) {
+          const found = line.match(/open_mark=(\d+)/);
+          if (found) mark = Number(found[1]);
+          continue;
+        }
+        if (line.startsWith("ts_ms")) continue;
+        const col = line.split(",");
+        const row = { ts: Number(col[0]), open: col[1] === "" ? null : Number(col[1]), rss: {} };
+        if (!Number.isFinite(row.ts)) continue;
+        NAMES.forEach((name, i) => {
+          const cell = col[i + 2];
+          row.rss[name] = cell === undefined || cell === "" ? null : Number(cell);
+        });
+        samples.push(row);
+      }
+      markIndex = samples.findIndex((row) => row.open != null && row.open >= mark);
+      renderTable();
+      draw();
+    }
+
+    function labelOf(name) {
+      return LABEL[name] || name;
+    }
+
+    function at(row, name) {
+      if (!row) return null;
+      const value = row.rss[name];
+      return value == null || Number.isNaN(value) ? null : value;
+    }
+
+    function renderTable() {
+      const body = document.getElementById("rows");
+      const note = document.getElementById("note");
+      body.innerHTML = "";
+      const base = markIndex >= 0 ? samples[markIndex] : null;
+      const last = samples[samples.length - 1];
+      const ranked = NAMES.map((name) => {
+        const start = at(base, name);
+        const end = at(last, name);
+        const delta = start == null || end == null ? null : end - start;
+        return { name, start, end, delta };
+      }).sort((a, b) => (b.delta ?? -1e12) - (a.delta ?? -1e12));
+      const eater = ranked.find((row) => row.delta != null && row.delta > 0);
+      for (const row of ranked) {
+        const tr = document.createElement("tr");
+        if (hidden.has(row.name)) tr.className = "off";
+        tr.addEventListener("click", () => {
+          if (hidden.has(row.name)) hidden.delete(row.name);
+          else hidden.add(row.name);
+          renderTable();
+          draw();
+        });
+        const delta = row.delta == null ? "—" : (row.delta >= 0 ? "+" : "") + row.delta.toFixed(1);
+        const eat = eater && eater.name === row.name;
+        tr.innerHTML =
+          `<td><span class="swatch" style="background:${COLOR[row.name]}"></span>${labelOf(row.name)}</td>` +
+          `<td>${row.start == null ? "—" : row.start.toFixed(1)}</td>` +
+          `<td>${row.end == null ? "—" : row.end.toFixed(1)}</td>` +
+          `<td class="${eat ? "eat" : ""}">${delta}</td>`;
+        body.appendChild(tr);
+      }
+      if (!samples.length) {
+        note.textContent = "No samples in this file.";
+      } else if (markIndex < 0) {
+        note.textContent = `Open positions have not reached ${mark.toLocaleString()} yet. After is blank until then.`;
+      } else {
+        const when = new Date(samples[markIndex].ts);
+        const who = eater ? `${labelOf(eater.name)} +${eater.delta.toFixed(1)} MB after the mark` : "no process grew after the mark";
+        note.textContent = `${mark.toLocaleString()} opens at ${when.toLocaleTimeString()}. ${who}. Click a row to hide it.`;
+      }
+    }
+
+    function draw() {
+      const canvas = document.getElementById("chart");
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      canvas.width = Math.max(1, Math.floor(width * dpr));
+      canvas.height = Math.max(1, Math.floor(height * dpr));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      const pad = { l: 52, r: 16, t: 16, b: 32 };
+      const plotW = width - pad.l - pad.r;
+      const plotH = height - pad.t - pad.b;
+      ctx.strokeStyle = "#2a2e38";
+      ctx.strokeRect(pad.l, pad.t, plotW, plotH);
+      if (samples.length < 2) {
+        ctx.fillStyle = "#9aa1ad";
+        ctx.fillText(samples.length ? "Need at least two samples." : "Load rss.csv", pad.l + 12, pad.t + 24);
+        return;
+      }
+      const t0 = samples[0].ts;
+      const t1 = samples[samples.length - 1].ts;
+      const span = Math.max(1, t1 - t0);
+      let yMax = 1;
+      for (const row of samples) {
+        for (const name of NAMES) {
+          if (hidden.has(name)) continue;
+          const value = at(row, name);
+          if (value != null && value > yMax) yMax = value;
+        }
+      }
+      yMax *= 1.08;
+      const xOf = (ts) => pad.l + ((ts - t0) / span) * plotW;
+      const yOf = (value) => pad.t + plotH - (value / yMax) * plotH;
+
+      ctx.fillStyle = "#9aa1ad";
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillText(yMax.toFixed(0), pad.l - 8, pad.t + 12);
+      ctx.fillText("0 MB", pad.l - 8, pad.t + plotH);
+      ctx.textAlign = "left";
+      ctx.fillText("0m", pad.l, height - 10);
+      ctx.textAlign = "right";
+      ctx.fillText(((span / 60000).toFixed(1)) + "m", pad.l + plotW, height - 10);
+
+      for (const name of NAMES) {
+        if (hidden.has(name)) continue;
+        ctx.beginPath();
+        ctx.strokeStyle = COLOR[name];
+        ctx.lineWidth = 1.6;
+        let started = false;
+        for (const row of samples) {
+          const value = at(row, name);
+          if (value == null) {
+            started = false;
+            continue;
+          }
+          const x = xOf(row.ts);
+          const y = yOf(value);
+          if (!started) {
+            ctx.moveTo(x, y);
+            started = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+        ctx.stroke();
+      }
+
+      if (markIndex >= 0) {
+        const x = xOf(samples[markIndex].ts);
+        ctx.beginPath();
+        ctx.strokeStyle = "#f2c14e";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.moveTo(x, pad.t);
+        ctx.lineTo(x, pad.t + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#f2c14e";
+        ctx.textAlign = "left";
+        ctx.fillText(mark.toLocaleString() + " opens", Math.min(x + 6, pad.l + plotW - 80), pad.t + 14);
+      }
+    }
+
+    window.addEventListener("resize", draw);
+  </script>
+</body>
+</html>

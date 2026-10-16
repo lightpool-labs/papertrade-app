@@ -172,6 +172,8 @@ Env:
   ADMIN_RETH_USDC_WHOLE   Reth mint for admin / hold_opens (default 100000000)
   CARGO_WATCH=0          cargo run once instead of cargo-watch
   PAPER_KEEPER=0         skip paper-keeper
+  RSS_WATCH_SEC=60       process RSS sample interval
+  OPEN_MARK=10000        open-position count drawn as a chart marker
 
 Start: Reth → node/indexer → deploy USDC+bridge → mint user+admin on Reth →
 init-bridge LP USDC → bridge daemon → paper-bootstrap → oracle/app/keeper.
@@ -1078,6 +1080,8 @@ Oracle    $ORACLE_CONFIG
 Backend   $APP_API
 Frontend  http://127.0.0.1:3000
 Keeper    \$DATA/logs/keeper.log
+RSS       \$DATA/logs/rss.csv
+Chart     $APP_ROOT/tests/rss.html
 Markets   $MARKETS_PATH
 Bootstrap $BOOTSTRAP_STATE
 Bridge st $BRIDGE_STATE
@@ -1115,6 +1119,119 @@ print("Flow: Connect MetaMask (#1) → Trade → Deposit USDC from Reth → Open
 PY
 }
 
+rss_tree_kb() {
+  local pid="$1"
+  local kb=0 child ckb
+  [[ -n "$pid" && -d "/proc/$pid" ]] || {
+    echo 0
+    return
+  }
+  kb="$(awk '/^VmRSS:/ { print $2 }' "/proc/$pid/status" 2>/dev/null || echo 0)"
+  [[ -n "$kb" ]] || kb=0
+  for child in $(ps -o pid= --ppid "$pid" 2>/dev/null || true); do
+    ckb="$(rss_tree_kb "$child")"
+    kb=$((kb + ckb))
+  done
+  echo "$kb"
+}
+
+kb_to_mb() {
+  local kb="$1"
+  if [[ -z "$kb" || "$kb" -eq 0 ]]; then
+    printf ''
+    return
+  fi
+  awk -v kb="$kb" 'BEGIN { printf "%.1f", kb / 1024 }'
+}
+
+pid_of() {
+  local name="$1"
+  local f="$PID_DIR/$name.pid"
+  local pid
+  [[ -f "$f" ]] || return 0
+  pid="$(cat "$f")"
+  kill -0 "$pid" 2>/dev/null || return 0
+  printf '%s' "$pid"
+}
+
+rss_mb_of() {
+  local pid kb
+  pid="$(pid_of "$1")"
+  [[ -n "$pid" ]] || {
+    printf ''
+    return
+  }
+  kb="$(rss_tree_kb "$pid")"
+  kb_to_mb "$kb"
+}
+
+hold_opens_mb() {
+  local pids pid ppid kb=0
+  pids="$(pgrep -x hold-opens 2>/dev/null || true)"
+  [[ -n "$pids" ]] || pids="$(pgrep -x hold_opens 2>/dev/null || true)"
+  [[ -n "$pids" ]] || {
+    printf ''
+    return
+  }
+  for pid in $pids; do
+    ppid="$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2>/dev/null || echo 0)"
+    if printf '%s\n' $pids | grep -qx "$ppid"; then
+      continue
+    fi
+    kb=$((kb + $(rss_tree_kb "$pid")))
+  done
+  kb_to_mb "$kb"
+}
+
+open_positions_now() {
+  [[ -f "$BOOTSTRAP_STATE" ]] || {
+    printf ''
+    return
+  }
+  python3 - "$BOOTSTRAP_STATE" "$CLOB_HTTP" <<'PY' || true
+import json, sys, urllib.parse, urllib.request
+try:
+    market = json.load(open(sys.argv[1], encoding="utf-8"))["paper_market"]
+    url = sys.argv[2].rstrip("/") + "/api/paper/house?market=" + urllib.parse.quote(market)
+    with urllib.request.urlopen(url, timeout=2) as resp:
+        body = json.load(resp)
+    print(int(body["house"]["open_positions"]))
+except Exception:
+    pass
+PY
+}
+
+rss_watch_loop() {
+  local csv="$LOG_DIR/rss.csv"
+  local sec="${RSS_WATCH_SEC:-60}"
+  local mark="${OPEN_MARK:-10000}"
+  local ts open row name
+  mkdir -p "$LOG_DIR"
+  {
+    echo "# open_mark=${mark}"
+    echo "ts_ms,open_positions,lightpool,bridge,indexer,oracle,backend,frontend,keeper,hold_opens"
+  } >"$csv"
+  echo "rss-watch every ${sec}s -> $csv (open mark $mark)"
+  while true; do
+    ts="$(date +%s%3N)"
+    open="$(open_positions_now)"
+    row="$ts,$open"
+    for name in lightpool bridge indexer oracle backend frontend keeper; do
+      row+=",$(rss_mb_of "$name")"
+    done
+    row+=",$(hold_opens_mb)"
+    echo "$row" >>"$csv"
+    sleep "$sec"
+  done
+}
+
+start_rss_watch() {
+  stop_pid rss-watch
+  echo "start rss-watch"
+  setsid "$0" rss-watch >"$LOG_DIR/rss-watch.log" 2>&1 </dev/null &
+  echo $! >"$PID_DIR/rss-watch.pid"
+}
+
 start_all() {
   need_cmd curl
   need_cmd ss
@@ -1137,6 +1254,7 @@ start_all() {
   start_frontend
   echo "=== start paper-keeper ==="
   start_keeper
+  start_rss_watch
   wait_http "$APP_API/health" "backend"
   wait_http "http://127.0.0.1:3000" "frontend"
   print_summary
@@ -1145,6 +1263,7 @@ start_all() {
 stop_all() {
   need_cmd ss
   echo "=== stop frontend / backend / keeper / oracle ==="
+  stop_pid rss-watch
   stop_pid frontend
   stop_pid backend
   stop_pid keeper
@@ -1160,7 +1279,7 @@ stop_all() {
 
 clean_all() {
   local name
-  for name in frontend backend keeper oracle bridge reth lightpool indexer; do
+  for name in frontend backend keeper oracle bridge reth lightpool indexer rss-watch; do
     if is_running "$name"; then
       echo "services still running; run: $0 stop" >&2
       exit 1
@@ -1179,7 +1298,7 @@ status_all() {
   echo "LABS=$LABS"
   echo "DATA=$DATA"
   local name
-  for name in reth bridge lightpool indexer oracle backend frontend keeper; do
+  for name in reth bridge lightpool indexer oracle backend frontend keeper rss-watch; do
     if is_running "$name"; then
       echo "UP   $name pid=$(cat "$PID_DIR/$name.pid")"
     else
@@ -1192,6 +1311,7 @@ main() {
   case "${1:-start}" in
     start) start_all ;;
     stop) stop_all ;;
+    rss-watch) rss_watch_loop ;;
     clean) clean_all ;;
     status) status_all ;;
     bootstrap)
