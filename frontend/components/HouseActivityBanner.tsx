@@ -6,6 +6,7 @@ import {
   type PaperPositionEvent,
 } from "@/lib/paperPositionsWs";
 import { launchLiqdAsh, fireworksOn } from "@/lib/liqdFireworks";
+import { priceCurveXSpan } from "@/lib/priceCurveHit";
 import { parseAmount } from "@/lib/math";
 
 const MAX_ITEMS = 80;
@@ -218,24 +219,159 @@ export function HouseActivityBanner({ market }: Props) {
     host.appendChild(scroller);
 
     const TRACK_GAP = 28;
+    const MIN_SPEED = 140;
+    type Boat = { el: HTMLElement; x: number; w: number };
+    const boats: Boat[] = [];
+    const waiting: HTMLElement[] = [];
+    const eventTimes: number[] = [];
     let seq = 0;
     /** Original chip under the freeze clone (may scroll away; banner never pauses). */
     let hoverChip: HTMLElement | null = null;
     let freezeClone: HTMLElement | null = null;
+    let raf = 0;
+    let lastTick = 0;
+    let speed = MIN_SPEED;
 
-    const stickEnd = () => {
-      scroller.scrollLeft = scroller.scrollWidth;
+    const placeBoat = (boat: Boat) => {
+      boat.el.style.transform = `translate3d(${boat.x}px, -50%, 0)`;
     };
 
-    /** Drop a chip; if it was leading, compensate scroll so content never jumps L→R. */
-    const removeChip = (el: HTMLElement) => {
-      const wasFirst = el === track.firstElementChild;
-      const w = el.getBoundingClientRect().width + TRACK_GAP;
-      if (el === hoverChip) hoverChip = null;
-      el.remove();
-      if (!wasFirst) return;
-      scroller.scrollLeft = Math.max(0, scroller.scrollLeft - w);
+    const viewWidth = () => {
+      const width = Math.max(
+        host.getBoundingClientRect().width,
+        track.getBoundingClientRect().width,
+        window.innerWidth,
+      );
+      return width > 0 ? width : window.innerWidth;
     };
+
+    const eventsPerSecond = () => {
+      const cutoff = performance.now() - 1000;
+      while (eventTimes.length > 0 && eventTimes[0] < cutoff) eventTimes.shift();
+      return eventTimes.length;
+    };
+
+    const boatGap = () => {
+      const rate = eventsPerSecond();
+      if (rate <= 1) return TRACK_GAP;
+      const t = Math.min(1, (rate - 1) / 7);
+      return TRACK_GAP + (2 - TRACK_GAP) * t;
+    };
+
+    const releaseWaiting = () => {
+      const viewW = viewWidth();
+      const gap = boatGap();
+      const place = (el: HTMLElement, x: number, w: number) => {
+        const boat: Boat = { el, x, w };
+        placeBoat(boat);
+        boats.push(boat);
+      };
+      const measure = () => {
+        const el = waiting.shift();
+        if (!el) return null;
+        track.appendChild(el);
+        return { el, w: Math.max(el.offsetWidth, 148) };
+      };
+
+      while (waiting.length > 0) {
+        const last = boats[boats.length - 1];
+        const behind = last ? last.x + last.w + gap : null;
+        if (behind != null && behind > viewW) break;
+
+        if (behind == null || behind < 0) {
+          const batch: Array<{ el: HTMLElement; w: number }> = [];
+          let used = 0;
+          while (waiting.length > 0) {
+            const item = measure();
+            if (!item) break;
+            const need = item.w + (batch.length > 0 ? gap : 0);
+            if (batch.length > 0 && used + need > viewW) {
+              item.el.remove();
+              waiting.unshift(item.el);
+              break;
+            }
+            batch.push(item);
+            used += need;
+          }
+          let x = Math.max(0, viewW - used);
+          for (const item of batch) {
+            place(item.el, x, item.w);
+            x += item.w + gap;
+          }
+          break;
+        }
+
+        const item = measure();
+        if (!item) break;
+        place(item.el, behind, item.w);
+      }
+    };
+
+    const enqueueBoat = (el: HTMLElement) => {
+      eventTimes.push(performance.now());
+      waiting.push(el);
+      while (waiting.length > MAX_ITEMS) {
+        const dropped = waiting.shift();
+        if (!dropped) break;
+        if (dropped === hoverChip) hoverChip = null;
+        dropped.remove();
+      }
+      idle.hidden = true;
+      releaseWaiting();
+    };
+
+    const tick = (now: number) => {
+      raf = window.requestAnimationFrame(tick);
+      if (!lastTick) lastTick = now;
+      const dt = Math.min(0.05, (now - lastTick) / 1000);
+      lastTick = now;
+      const gap = boatGap();
+      const spacing = (boats[boats.length - 1]?.w ?? 148) + gap;
+      const target = Math.max(MIN_SPEED, eventsPerSecond() * spacing);
+      speed = target;
+      const dx = speed * dt;
+      for (const boat of boats) {
+        boat.x -= dx;
+        placeBoat(boat);
+      }
+      if (fireworksOn()) {
+        const span = priceCurveXSpan();
+        const hostBox = host.getBoundingClientRect();
+        const fireY = hostBox.top + hostBox.height / 2;
+        for (const boat of boats) {
+          const chip = boat.el;
+          if (chip.dataset.kind !== "liquidated" || chip.dataset.liqdFired) continue;
+          const cx = hostBox.left + boat.x + boat.w / 2;
+          const prevCx = cx + dx;
+          const loss = Number(chip.dataset.liqdLoss) || 0;
+          let fireX = cx;
+          if (span) {
+            const fromLeft = Math.min(1, Math.max(0, 1 - Math.log10(Math.max(loss, 1)) / 3.75));
+            const targetX = span.x0 + fromLeft * (span.x1 - span.x0);
+            const crossed = prevCx >= targetX && cx <= targetX;
+            if (!crossed && cx > targetX) continue;
+            fireX = targetX;
+          } else if (cx > window.innerWidth && prevCx > window.innerWidth) {
+            continue;
+          } else if (prevCx > window.innerWidth && cx < 0) {
+            fireX = window.innerWidth * 0.5;
+          } else if (cx > window.innerWidth) {
+            continue;
+          }
+          chip.dataset.liqdFired = "1";
+          launchLiqdAsh(fireX, fireY, loss, chip.dataset.id ?? "");
+        }
+      }
+      while (boats.length > 0 && boats[0].x + boats[0].w < 0) {
+        const gone = boats.shift();
+        if (!gone) break;
+        if (gone.el === hoverChip) hoverChip = null;
+        gone.el.remove();
+      }
+      releaseWaiting();
+      if (boats.length === 0 && waiting.length === 0) idle.hidden = false;
+    };
+    raf = window.requestAnimationFrame(tick);
 
     const placeTip = (anchor: HTMLElement) => {
       const rect = anchor.getBoundingClientRect();
@@ -325,6 +461,7 @@ export function HouseActivityBanner({ market }: Props) {
       const clone = chip.cloneNode(true) as HTMLElement;
       clone.classList.add("house-activity-frozen");
       clone.classList.add("house-activity-hovered");
+      clone.style.transform = "";
       clone.style.top = `${rect.top}px`;
       clone.addEventListener("mouseleave", onFreezeLeave);
       document.body.appendChild(clone);
@@ -352,11 +489,6 @@ export function HouseActivityBanner({ market }: Props) {
       chip.addEventListener("mouseleave", onChipLeave);
     };
 
-    const onScroll = () => {
-      scroller.scrollLeft = scroller.scrollWidth;
-    };
-    scroller.addEventListener("scroll", onScroll);
-
     const unsub = subscribePaperPositions({
       onEvent: (ev: PaperPositionEvent) => {
         const kind = normalizeKind(ev.event);
@@ -366,38 +498,27 @@ export function HouseActivityBanner({ market }: Props) {
 
         seq += 1;
         const chip = makeChip(ev, kind, `${seq}-${ev.position ?? 0}-${kind}`);
+        if (seq % 20 === 0) {
+          const colors = ["#e11d48", "#f59e0b", "#2563eb", "#16a34a", "#7c3aed", "#111827"];
+          const n = seq / 20;
+          const flag = document.createElement("span");
+          flag.className = "house-activity-flag";
+          flag.textContent = String(seq);
+          flag.style.background = colors[(n - 1) % colors.length];
+          chip.prepend(flag);
+        }
+        if (kind === "liquidated") {
+          chip.dataset.liqdLoss = String(chipAmount(ev, kind));
+        }
         bindChipHover(chip);
-        track.appendChild(chip);
         idle.hidden = true;
-        if (kind === "liquidated" && fireworksOn()) {
-          const loss = chipAmount(ev, kind);
-          stickEnd();
-          requestAnimationFrame(() => {
-            const sizeEl =
-              chip.querySelector(".house-activity-size") ?? chip;
-            const rect = sizeEl.getBoundingClientRect();
-            if (rect.width <= 0 && rect.height <= 0) return;
-            launchLiqdAsh(
-              rect.left + rect.width / 2,
-              rect.top + rect.height / 2,
-              loss,
-              chip.dataset.id ?? "",
-            );
-          });
-        }
-
-        while (track.childElementCount > MAX_ITEMS) {
-          const first = track.firstElementChild as HTMLElement | null;
-          if (!first) break;
-          removeChip(first);
-        }
-        requestAnimationFrame(stickEnd);
+        enqueueBoat(chip);
       },
     });
 
     return () => {
       unsub();
-      scroller.removeEventListener("scroll", onScroll);
+      window.cancelAnimationFrame(raf);
       hideTip();
       tip.remove();
       host.replaceChildren();

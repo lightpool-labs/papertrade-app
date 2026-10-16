@@ -374,7 +374,7 @@ export function launchLiqdAsh(
   if (!fireworksOn()) return;
   if (id && launched.has(id)) return;
   const span = priceCurveXSpan();
-  if (!span || x < span.x0 || x > span.x1) return;
+  if (span && (x < span.x0 || x > span.x1)) return;
   ensureCanvas();
   const t = momentum(notional);
   const startX = x;
