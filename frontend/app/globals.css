@@ -1007,8 +1007,9 @@ button {
 .paper-revenue-card .paper-revenue-bars,
 .paper-reward-chart-card .paper-reward-curve {
   flex: 1 1 auto;
-  min-height: 80px;
-  height: auto;
+  min-height: 0;
+  height: 0;
+  overflow: hidden;
 }
 
 .paper-row-grid > .house-card {
@@ -1098,22 +1099,25 @@ button {
 }
 
 .paper-inline-stats {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  width: 0;
   min-width: 0;
   margin: 0;
 }
 
 .paper-inline-row > .paper-input {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  width: 0;
   min-width: 0;
 }
 
 .paper-actions-card .paper-action-btn {
-  flex: 0 0 auto;
+  flex: 0 0 9.25rem;
   margin-top: 0;
   white-space: nowrap;
-  width: 7.75rem;
-  min-width: 7.75rem;
+  width: 9.25rem;
+  min-width: 9.25rem;
+  max-width: 9.25rem;
   box-sizing: border-box;
   text-align: center;
   padding-left: 8px;
@@ -1986,7 +1990,9 @@ button {
 }
 
 .paper-row-grid > .house-card.paper-actions-card > .paper-claim-row > .ticket-stats {
-  flex: 0 0 auto;
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
   min-height: min-content !important;
   overflow: visible;
 }
@@ -2125,6 +2131,33 @@ button {
   .bottom-panel {
     height: 300px;
     min-height: 300px;
+  }
+
+  .paper-layout {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+  }
+
+  .paper-row-grid,
+  .paper-row-claim {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    min-height: 0;
+    height: auto;
+  }
+
+  .paper-row-claim > .house-card.paper-actions-card {
+    flex: 0 0 auto;
+    height: auto;
+    min-height: max-content;
+    overflow: hidden;
+  }
+
+  .paper-stat-revenue {
+    flex: 0 0 auto;
   }
 
   .pos-table-open {

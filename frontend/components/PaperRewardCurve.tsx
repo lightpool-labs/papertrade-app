@@ -157,9 +157,8 @@ export function PaperRewardCurve({ params }: Props) {
     if (!ctx) return;
 
     const resize = () => {
-      const rect = wrap.getBoundingClientRect();
-      const w = Math.max(1, Math.floor(rect.width));
-      const h = Math.max(1, Math.floor(rect.height));
+      const w = Math.max(1, wrap.clientWidth);
+      const h = Math.max(1, wrap.clientHeight);
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.floor(w * ratio);
       canvas.height = Math.floor(h * ratio);
