@@ -28,6 +28,7 @@ import {
 } from "@/lib/hlDayChange";
 import { subscribeOracleMark } from "@/lib/markWs";
 import { sumUnrealizedPnl } from "@/lib/math";
+import { POS_LIQD_EVENT } from "@/lib/liqdFireworks";
 import { subscribePaperUser } from "@/lib/paperUserWs";
 
 function TradeBody() {
@@ -216,7 +217,18 @@ function TradeBody() {
           ev.market != null &&
           ev.position != null
         ) {
-          removeOpenPosition(ev.market, ev.position);
+          if (kind === "liquidated") {
+            window.dispatchEvent(
+              new CustomEvent(POS_LIQD_EVENT, {
+                detail: { market: ev.market, position: ev.position },
+              }),
+            );
+            const market = ev.market;
+            const position = ev.position;
+            window.setTimeout(() => removeOpenPosition(market, position), 1100);
+          } else {
+            removeOpenPosition(ev.market, ev.position);
+          }
           if (debounce != null) window.clearTimeout(debounce);
           debounce = window.setTimeout(() => {
             void refreshAccountAndPositions({ silent: true, opens: false });

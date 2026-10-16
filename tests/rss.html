@@ -80,7 +80,7 @@
     const LABEL = { hold_opens: "hold-opens" };
     const COLOR = {
       bridge: "#9ece6a",
-      lightpool: "#bb9af7",
+      lightpool: "#c4a1ff",
       indexer: "#f7768e",
       oracle: "#e0af68",
       backend: "#7dcfff",
@@ -116,6 +116,7 @@
       samples = [];
       mark = 10000;
       hidden.clear();
+      let columns = NAMES.slice();
       for (const raw of text.split(/\r?\n/)) {
         const line = raw.trim();
         if (!line) continue;
@@ -124,11 +125,16 @@
           if (found) mark = Number(found[1]);
           continue;
         }
-        if (line.startsWith("ts_ms")) continue;
+        if (line.startsWith("ts_ms")) {
+          const header = line.split(",").map((cell) => cell.trim());
+          const named = header.slice(2).filter((name) => COLOR[name]);
+          if (named.length) columns = named;
+          continue;
+        }
         const col = line.split(",");
         const row = { ts: Number(col[0]), open: col[1] === "" ? null : Number(col[1]), rss: {} };
         if (!Number.isFinite(row.ts)) continue;
-        NAMES.forEach((name, i) => {
+        columns.forEach((name, i) => {
           const cell = col[i + 2];
           row.rss[name] = cell === undefined || cell === "" ? null : Number(cell);
         });
@@ -236,12 +242,22 @@
       ctx.textAlign = "right";
       ctx.fillText(((span / 60000).toFixed(1)) + "m", pad.l + plotW, height - 10);
 
-      for (const name of NAMES) {
-        if (hidden.has(name)) continue;
+      const series = NAMES
+        .filter((name) => !hidden.has(name))
+        .slice()
+        .sort((a, b) => {
+          const av = at(samples[samples.length - 1], a) ?? 0;
+          const bv = at(samples[samples.length - 1], b) ?? 0;
+          return bv - av;
+        });
+      ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
+      ctx.textBaseline = "middle";
+      for (const name of series) {
         ctx.beginPath();
         ctx.strokeStyle = COLOR[name];
-        ctx.lineWidth = 1.6;
+        ctx.lineWidth = name === "lightpool" ? 2.5 : 1.6;
         let started = false;
+        let end = null;
         for (const row of samples) {
           const value = at(row, name);
           if (value == null) {
@@ -250,6 +266,7 @@
           }
           const x = xOf(row.ts);
           const y = yOf(value);
+          end = { x, y, value };
           if (!started) {
             ctx.moveTo(x, y);
             started = true;
@@ -258,6 +275,10 @@
           }
         }
         ctx.stroke();
+        if (!end) continue;
+        ctx.fillStyle = COLOR[name];
+        ctx.textAlign = "left";
+        ctx.fillText(labelOf(name), Math.min(end.x + 4, pad.l + plotW - 72), end.y);
       }
 
       if (markIndex >= 0) {

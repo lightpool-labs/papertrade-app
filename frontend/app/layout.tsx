@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { Providers } from "@/components/Providers";
 
 export const metadata: Metadata = {
-  title: "Papertrader",
+  title: "PaperTrade on lightpool",
   description: "LightPool paper synthetic perpetuals",
 };
 

@@ -21,7 +21,8 @@ export function TopBar() {
   return (
     <header className="topbar">
       <Link href="/trade/btc" className="logo">
-        Papertrader
+        <span className="logo-name">PaperTrade</span>
+        <span className="logo-sub">on lightpool</span>
       </Link>
       <nav className="nav-links" aria-busy={pending || undefined}>
         {LINKS.map((link) => {

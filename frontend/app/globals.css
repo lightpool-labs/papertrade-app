@@ -86,8 +86,23 @@ button {
 }
 
 .logo {
-  font-weight: 700;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.logo-name {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.logo-sub {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .nav-links {
@@ -134,7 +149,29 @@ button {
 }
 
 .ticket-body {
+  display: flex;
+  flex-direction: column;
   padding: 12px;
+}
+
+.ticket-order {
+  display: contents;
+}
+
+.ticket-order-fields {
+  order: 1;
+}
+
+.ticket-account {
+  order: 2;
+}
+
+.ticket-fund {
+  order: 3;
+}
+
+.ticket-status {
+  order: 4;
 }
 
 .bottom-panel {
@@ -648,6 +685,31 @@ button {
   color: var(--text);
 }
 
+.fireworks-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.fireworks-toggle input {
+  accent-color: var(--sell);
+  cursor: pointer;
+}
+
+.liqd-fireworks {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 50;
+}
+
 .bottom-empty,
 .stub-page {
   padding: 24px;
@@ -751,8 +813,7 @@ button {
 .pos-table-open col.c-upnl { width: 104px; }
 .pos-table-open col.c-roe { width: 80px; }
 .pos-table-open col.c-bust { width: 104px; }
-.pos-table-open col.c-pos { width: 56px; }
-.pos-table-open col.c-action { width: 96px; }
+.pos-table-open col.c-action { width: 72px; }
 
 .pos-table-open td.c-num,
 .pos-table-open th.c-num {
@@ -779,6 +840,24 @@ button {
   padding: 8px 14px;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.pos-table-open tr.pos-liqd-float {
+  transform-origin: left center;
+  animation: pos-liqd-float 0.42s ease-out forwards;
+}
+
+.pos-table-open tr.pos-liqd-gone {
+  visibility: hidden;
+}
+
+@keyframes pos-liqd-float {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  to {
+    transform: translateY(-8px) scale(1.06);
+  }
 }
 
 .pos-close-btn:disabled {
@@ -833,12 +912,13 @@ button {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: auto;
 }
 
 .paper-shell .paper-main > .paper-layout {
   flex: 1 1 auto;
-  min-height: 0;
-  height: 100%;
+  min-height: 100%;
+  height: auto;
 }
 
 .paper-head {
@@ -857,11 +937,11 @@ button {
 .paper-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: repeat(4, minmax(min-content, 1fr));
   gap: var(--shell-gap);
   flex: 1 1 auto;
-  min-height: 0;
-  height: 100%;
+  min-height: 100%;
+  height: auto;
   align-items: stretch;
 }
 
@@ -872,8 +952,8 @@ button {
   align-items: stretch;
   width: 100%;
   max-width: 100%;
-  min-height: 0;
-  height: 100%;
+  min-height: 100%;
+  height: auto;
   box-sizing: border-box;
 }
 
@@ -914,10 +994,11 @@ button {
 
 .paper-history-chart-card,
 .paper-revenue-card,
-.paper-reward-chart-card {
+.paper-reward-chart-card,
+.paper-layout > .paper-activity-card {
   min-width: 0;
-  min-height: 0;
-  height: 100%;
+  min-height: 200px;
+  height: auto;
   display: flex;
   flex-direction: column;
 }
@@ -931,17 +1012,22 @@ button {
 }
 
 .paper-row-grid > .house-card {
-  min-height: 0;
-  height: 100%;
-  overflow: auto;
+  min-height: 180px;
+  height: auto;
+  overflow: visible;
   display: flex;
   flex-direction: column;
+}
+
+.paper-row-grid > .house-card.paper-actions-card {
+  min-height: 260px;
 }
 
 .paper-row-grid > .house-card > .ticket-stats,
 .paper-row-grid > .house-card > .house-stats-list {
   flex: 1 1 auto;
-  min-height: 0 !important;
+  min-height: min-content !important;
+  overflow: visible;
 }
 
 .paper-row-claim .paper-actions-stack {
@@ -1881,6 +1967,39 @@ button {
   box-sizing: border-box;
 }
 
+.paper-layout > .house-card,
+.paper-row-grid > .house-card {
+  height: auto;
+  min-height: max(180px, max-content);
+  overflow: visible;
+}
+
+.paper-layout > .house-card.paper-actions-card,
+.paper-row-grid > .house-card.paper-actions-card {
+  min-height: max-content;
+}
+
+.paper-actions-card > *,
+.paper-actions-card .paper-form,
+.paper-actions-card .paper-action-btn {
+  flex-shrink: 0;
+}
+
+.paper-row-grid > .house-card.paper-actions-card > .paper-claim-row > .ticket-stats {
+  flex: 0 0 auto;
+  min-height: min-content !important;
+  overflow: visible;
+}
+
+.paper-layout > .paper-history-chart-card,
+.paper-layout > .paper-revenue-card,
+.paper-layout > .paper-reward-chart-card,
+.paper-layout > .paper-activity-card {
+  min-height: 200px;
+  height: auto;
+  overflow: hidden;
+}
+
 .house-metric-chart-card,
 .house-oi-chart-card,
 .house-queue-debt-card,
@@ -1990,9 +2109,52 @@ button {
     grid-template-areas:
       "top"
       "chart"
-      "ticket"
-      "tabs";
+      "tabs"
+      "ticket";
     height: auto;
     overflow: auto;
+  }
+
+  .chart-stack {
+    height: calc(
+      100vh - var(--shell-pad) - var(--topbar-h) - var(--shell-gap) * 2 - 56px - 300px
+    );
+    min-height: 220px;
+  }
+
+  .bottom-panel {
+    height: 300px;
+    min-height: 300px;
+  }
+
+  .pos-table-open {
+    min-width: 0;
+    font-size: 14px;
+  }
+
+  .pos-table-open col.c-inst { width: 10%; }
+  .pos-table-open col.c-side { width: 8%; }
+  .pos-table-open col.c-margin { width: 9%; }
+  .pos-table-open col.c-notional { width: 9%; }
+  .pos-table-open col.c-entry { width: 10%; }
+  .pos-table-open col.c-mark { width: 10%; }
+  .pos-table-open col.c-upnl { width: 10%; }
+  .pos-table-open col.c-roe { width: 8%; }
+  .pos-table-open col.c-bust { width: 8%; }
+  .pos-table-open col.c-action { width: 18%; }
+
+  .pos-table-wrap:has(.pos-table-open) {
+    padding: 10px 12px 12px;
+  }
+
+  .pos-table-open th,
+  .pos-table-open td {
+    padding: 8px 3px;
+    font-size: 14px;
+  }
+
+  .pos-table-open .pos-close-btn {
+    padding: 6px 8px;
+    font-size: 14px;
   }
 }

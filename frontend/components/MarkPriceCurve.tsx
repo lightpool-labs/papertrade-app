@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { formatPrice } from "@/lib/math";
+import { clearPriceCurve, publishPriceCurve } from "@/lib/priceCurveHit";
 
 type Point = { t: number; p: number };
 
@@ -232,6 +233,15 @@ export function MarkPriceCurve({ mark, seed = null, windowMs = 30_000 }: Props) 
       const yOf = (p: number) =>
         PAD.top + ((hi - p) / span) * plotH;
 
+      publishPriceCurve(
+        visible
+          .filter((p) => p.t >= t0 && p.t <= t1)
+          .map((p) => ({
+            x: rect.left + xOf(p.t),
+            y: rect.top + yOf(p.p),
+          })),
+      );
+
       const open = sessionOpenRef.current ?? display;
       const tipPrice = atLive
         ? display
@@ -356,6 +366,7 @@ export function MarkPriceCurve({ mark, seed = null, windowMs = 30_000 }: Props) 
 
     return () => {
       alive = false;
+      clearPriceCurve();
       cancelAnimationFrame(raf);
       ro.disconnect();
       canvas.removeEventListener("mousedown", onMouseDown);

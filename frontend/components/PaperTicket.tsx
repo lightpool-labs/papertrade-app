@@ -89,6 +89,8 @@ export function PaperTicket({
   return (
     <aside className="paper-ticket">
       <div className="ticket-body">
+        <div className="ticket-order">
+        <div className="ticket-order-fields">
         <div className="side-toggle">
           <button
             type="button"
@@ -190,13 +192,7 @@ export function PaperTicket({
               ? "Open Long"
               : "Open Short"}
         </button>
-
-        <AccountStrip
-          account={account}
-          loading={accountLoading}
-          variant="ticket"
-          openPnl={openPnl}
-        />
+        </div>
 
         <div className="ticket-fund">
           <div className="fund-actions">
@@ -220,6 +216,16 @@ export function PaperTicket({
         </div>
 
         {status ? <p className="ticket-status">{status}</p> : null}
+        </div>
+
+        <div className="ticket-account">
+          <AccountStrip
+            account={account}
+            loading={accountLoading}
+            variant="ticket"
+            openPnl={openPnl}
+          />
+        </div>
       </div>
 
       {fundKind && market?.paper_market ? (

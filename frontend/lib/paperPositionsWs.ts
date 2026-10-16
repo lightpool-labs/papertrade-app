@@ -12,6 +12,8 @@ export type PaperPositionEvent = {
   bust_price_raw?: number;
   notional?: string;
   notional_raw?: number;
+  margin?: string;
+  margin_raw?: number;
   entry_price?: string;
   entry_price_raw?: number;
   instrument_name?: string;

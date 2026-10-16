@@ -5,6 +5,7 @@ import {
   subscribePaperPositions,
   type PaperPositionEvent,
 } from "@/lib/paperPositionsWs";
+import { launchLiqdAsh, fireworksOn } from "@/lib/liqdFireworks";
 import { parseAmount } from "@/lib/math";
 
 const MAX_ITEMS = 80;
@@ -55,11 +56,29 @@ function moneyCompact(n: number): string {
   return `${sign}${abs.toFixed(1)}`;
 }
 
-/** Size = margin × leverage = notional (human USDC). */
-function sizeLabel(ev: PaperPositionEvent): string {
-  const nr = Number(ev.notional_raw);
-  const n =
-    Number.isFinite(nr) && nr > 0 ? nr / TOKEN_SCALE : parseAmount(ev.notional ?? "");
+function amountHuman(raw: number | undefined, text: string | undefined): number {
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return n / TOKEN_SCALE;
+  const parsed = parseAmount(text ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function chipAmount(ev: PaperPositionEvent, kind: Kind): number {
+  const margin = amountHuman(ev.margin_raw, ev.margin);
+  if (margin > 0) return margin;
+  if (kind === "liquidated") {
+    if (ev.pnl_raw != null && Number.isFinite(Number(ev.pnl_raw))) {
+      return Math.abs(Number(ev.pnl_raw)) / TOKEN_SCALE;
+    }
+    const pnl = parseAmount(ev.pnl ?? "");
+    if (Number.isFinite(pnl)) return Math.abs(pnl);
+  }
+  return 0;
+}
+
+/** Banner amount is margin (user funds), not notional. */
+function sizeLabel(ev: PaperPositionEvent, kind: Kind): string {
+  const n = chipAmount(ev, kind);
   if (!Number.isFinite(n) || n <= 0) return "—";
   return `$${moneyCompact(n)}`;
 }
@@ -137,7 +156,7 @@ function makeChip(ev: PaperPositionEvent, kind: Kind, id: string): HTMLSpanEleme
   el.dataset.kind = kind;
   el.dataset.title = tipTitle(ev, kind);
   el.dataset.titleTone = tipTitleTone(ev, kind);
-  el.dataset.size = sizeLabel(ev);
+  el.dataset.size = sizeLabel(ev, kind);
   el.dataset.pnl = pnlLabel(ev, kind);
   el.dataset.wallet = ev.user_address?.trim() || "—";
 
@@ -159,7 +178,7 @@ function makeChip(ev: PaperPositionEvent, kind: Kind, id: string): HTMLSpanEleme
     el.appendChild(liq);
   }
 
-  notion.textContent = sizeLabel(ev);
+  notion.textContent = sizeLabel(ev, kind);
   el.appendChild(notion);
   return el;
 }
@@ -261,7 +280,7 @@ export function HouseActivityBanner({ market }: Props) {
       head.textContent = title;
       tip.appendChild(head);
 
-      const rows: Array<[string, string]> = [["Size", size]];
+      const rows: Array<[string, string]> = [["Margin", size]];
       // Opens have no realized PnL; close / liqd always show the row.
       if (kind === "closed" || kind === "liquidated") {
         rows.push(["PnL", pnl || "—"]);
@@ -350,6 +369,22 @@ export function HouseActivityBanner({ market }: Props) {
         bindChipHover(chip);
         track.appendChild(chip);
         idle.hidden = true;
+        if (kind === "liquidated" && fireworksOn()) {
+          const loss = chipAmount(ev, kind);
+          stickEnd();
+          requestAnimationFrame(() => {
+            const sizeEl =
+              chip.querySelector(".house-activity-size") ?? chip;
+            const rect = sizeEl.getBoundingClientRect();
+            if (rect.width <= 0 && rect.height <= 0) return;
+            launchLiqdAsh(
+              rect.left + rect.width / 2,
+              rect.top + rect.height / 2,
+              loss,
+              chip.dataset.id ?? "",
+            );
+          });
+        }
 
         while (track.childElementCount > MAX_ITEMS) {
           const first = track.firstElementChild as HTMLElement | null;
