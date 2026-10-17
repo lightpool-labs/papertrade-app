@@ -79,6 +79,7 @@ function metricFromHouse(next: PaperHouse, t: number): HouseMetricPoint | null {
 function HouseBody() {
   const { address } = useWallet();
   const [house, setHouse] = useState<PaperHouse | null>(null);
+  const [chartHouse, setChartHouse] = useState<PaperHouse | null>(null);
   const [paperMarket, setPaperMarket] = useState<string>("");
   const [oiSeed, setOiSeed] = useState<OiPoint[] | null>(null);
   const [metricSeed, setMetricSeed] = useState<HouseMetricPoint[] | null>(null);
@@ -90,8 +91,8 @@ function HouseBody() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const applyHouse = useCallback((next: PaperHouse, tsMs: number) => {
-    setHouse(next);
+  const applyChartPoints = useCallback((next: PaperHouse, tsMs: number) => {
+    setChartHouse(next);
     const t = tsMs > 0 ? tsMs : Date.now();
     const metricPt = metricFromHouse(next, t);
     if (metricPt) {
@@ -147,6 +148,14 @@ function HouseBody() {
       return kept;
     });
   }, []);
+
+  const applyHouse = useCallback(
+    (next: PaperHouse, tsMs: number) => {
+      setHouse(next);
+      applyChartPoints(next, tsMs);
+    },
+    [applyChartPoints],
+  );
 
   const loadSnapshot = useCallback(
     async (market: string) => {
@@ -287,30 +296,32 @@ function HouseBody() {
     if (!paperMarket) return;
     void loadSnapshot(paperMarket);
 
-    // Apply house WS at most once per second (keep latest tick).
-    const REDRAW_MS = 1_000;
+    // Labels paint on every WS message. Chart points keep the latest tick
+    // and append at most once per second.
+    const CHART_MS = 1_000;
     let timer = 0;
     let lastFlush = 0;
     let pending: { house: PaperHouse; tsMs: number } | null = null;
 
-    const flush = () => {
+    const flushCharts = () => {
       const p = pending;
       pending = null;
       if (!p) return;
       lastFlush = Date.now();
-      applyHouse(p.house, p.tsMs);
-      setLoading(false);
-      setError(null);
+      applyChartPoints(p.house, p.tsMs);
     };
 
     const unsub = subscribePaperHouse(paperMarket, {
-      onHouse: (house, tsMs) => {
-        pending = { house, tsMs };
+      onHouse: (next, tsMs) => {
+        setHouse(next);
+        setLoading(false);
+        setError(null);
+        pending = { house: next, tsMs };
         if (timer) return;
-        const wait = Math.max(0, REDRAW_MS - (Date.now() - lastFlush));
+        const wait = Math.max(0, CHART_MS - (Date.now() - lastFlush));
         timer = window.setTimeout(() => {
           timer = 0;
-          flush();
+          flushCharts();
         }, wait);
       },
       onError: (err) => {
@@ -322,7 +333,7 @@ function HouseBody() {
       if (timer) window.clearTimeout(timer);
       pending = null;
     };
-  }, [paperMarket, loadSnapshot, applyHouse]);
+  }, [paperMarket, loadSnapshot, applyChartPoints]);
 
   useEffect(() => {
     if (!paperMarket || !address?.trim()) {
@@ -399,15 +410,40 @@ function HouseBody() {
     };
   }, [instruments, oiInstrument]);
 
+  const chartInstruments = chartHouse?.instruments ?? [];
+  const chartOi = useMemo(() => {
+    const row =
+      chartInstruments.find((i) => i.instrument === oiInstrument) ??
+      chartInstruments.find((i) => i.name.toUpperCase() === "BTC") ??
+      chartInstruments[0];
+    if (!row) return { long: null as number | null, short: null as number | null };
+    const long = parseAmount(row.long);
+    const short = parseAmount(row.short);
+    return {
+      long: Number.isFinite(long) ? long : null,
+      short: Number.isFinite(short) ? short : null,
+    };
+  }, [chartInstruments, oiInstrument]);
+
   const liveMetric = useMemo(() => {
     if (!house) return null;
     return metricFromHouse(house, Date.now());
   }, [house]);
 
+  const chartMetric = useMemo(() => {
+    if (!chartHouse) return null;
+    return metricFromHouse(chartHouse, Date.now());
+  }, [chartHouse]);
+
   const liveDebt = useMemo(() => {
     if (!liveMetric) return null as number | null;
     return liveMetric.queue_debt;
   }, [liveMetric]);
+
+  const chartDebt = useMemo(() => {
+    if (!chartMetric) return null as number | null;
+    return chartMetric.queue_debt;
+  }, [chartMetric]);
 
   const liveMetricValue = liveMetric ? liveMetric[metric] : null;
 
@@ -488,7 +524,7 @@ function HouseBody() {
                 </div>
                 <HouseMetricCurve
                   seed={metricSeed}
-                  live={liveMetric}
+                  live={chartMetric}
                   metric={metric}
                   windowMs={HOUSE_METRIC_WINDOW_MS}
                 />
@@ -565,8 +601,8 @@ function HouseBody() {
                 </div>
                 <HouseOiCurve
                   seed={oiSeed}
-                  long={liveOi.long}
-                  short={liveOi.short}
+                  long={chartOi.long}
+                  short={chartOi.short}
                   windowMs={HOUSE_OI_WINDOW_MS}
                 />
               </section>
@@ -602,7 +638,7 @@ function HouseBody() {
                 </div>
                 <HouseDebtCurve
                   seed={debtSeed}
-                  debt={liveDebt}
+                  debt={chartDebt}
                   windowMs={HOUSE_DEBT_WINDOW_MS}
                 />
               </section>

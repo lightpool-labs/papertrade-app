@@ -90,6 +90,7 @@ function PaperBody() {
   } = useWallet();
   const [paperMarket, setPaperMarket] = useState("");
   const [stake, setStake] = useState<PaperStake | null>(null);
+  const [chartStake, setChartStake] = useState<PaperStake | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -102,18 +103,49 @@ function PaperBody() {
     null,
   );
 
-  const applyStake = useCallback((next: PaperStake, tsMs = Date.now()) => {
+  const paintStake = useCallback((next: PaperStake) => {
     setStake((prev) => (prev && stakeUiEqual(prev, next) ? prev : next));
-    const lifetime = parseAmount(next.total_staker_rewards);
-    const hist: PaperStakeHistoryPoint = {
-      t: tsMs,
-      // Lifetime fees to stakers (monotonic); never reward_pool (drops on claim).
-      staking_revenue: lifetime,
-      total_paper_supply: parseAmount(next.total_supply),
-      total_staking_reward: lifetime,
-    };
-    setLiveHistory((prev) => (historyEqual(prev, hist) ? prev : hist));
   }, []);
+
+  const applyChart = useCallback(
+    (
+      next: PaperStake,
+      tsMs: number,
+      tick?: {
+        staking_revenue_raw?: number;
+        total_paper_supply_raw?: number;
+        total_staking_reward_raw?: number;
+      },
+    ) => {
+      setChartStake(next);
+      const hist: PaperStakeHistoryPoint = tick
+        ? {
+            t: tsMs,
+            staking_revenue: Number(tick.staking_revenue_raw ?? 0) / 1_000_000,
+            total_paper_supply:
+              Number(tick.total_paper_supply_raw ?? 0) / 1_000_000,
+            total_staking_reward:
+              Number(tick.total_staking_reward_raw ?? 0) / 1_000_000,
+          }
+        : {
+            t: tsMs,
+            // Lifetime fees to stakers (monotonic); never reward_pool (drops on claim).
+            staking_revenue: parseAmount(next.total_staker_rewards),
+            total_paper_supply: parseAmount(next.total_supply),
+            total_staking_reward: parseAmount(next.total_staker_rewards),
+          };
+      setLiveHistory((prev) => (historyEqual(prev, hist) ? prev : hist));
+    },
+    [],
+  );
+
+  const applyStake = useCallback(
+    (next: PaperStake, tsMs = Date.now()) => {
+      paintStake(next);
+      applyChart(next, tsMs);
+    },
+    [paintStake, applyChart],
+  );
 
   useEffect(() => {
     void listMarkets()
@@ -151,6 +183,7 @@ function PaperBody() {
     const user = address?.trim() ?? "";
     if (!paperMarket.trim() || !user) {
       setStake(null);
+      setChartStake(null);
       setLiveHistory(null);
       return;
     }
@@ -166,8 +199,9 @@ function PaperBody() {
         setLoading(false);
       });
 
-    // Redraw at most once per second; keep the latest WS tick until then.
-    const REDRAW_MS = 1_000;
+    // Labels paint on every WS message. Chart points keep the latest tick
+    // and append at most once per second.
+    const CHART_MS = 1_000;
     let timer = 0;
     let lastFlush = 0;
     let pending: {
@@ -180,33 +214,25 @@ function PaperBody() {
       tsMs: number;
     } | null = null;
 
-    const flush = () => {
+    const flushCharts = () => {
       const p = pending;
       pending = null;
       if (!p) return;
       lastFlush = Date.now();
-      applyStake(p.next, p.tsMs);
-      const hist: PaperStakeHistoryPoint = {
-        t: p.tsMs,
-        staking_revenue: Number(p.tick.staking_revenue_raw ?? 0) / 1_000_000,
-        total_paper_supply:
-          Number(p.tick.total_paper_supply_raw ?? 0) / 1_000_000,
-        total_staking_reward:
-          Number(p.tick.total_staking_reward_raw ?? 0) / 1_000_000,
-      };
-      setLiveHistory((prev) => (historyEqual(prev, hist) ? prev : hist));
-      setLoading(false);
-      setError(null);
+      applyChart(p.next, p.tsMs, p.tick);
     };
 
     const unsub = subscribePaperStake(paperMarket, user, {
       onStake: (next, tick, tsMs) => {
+        paintStake(next);
+        setLoading(false);
+        setError(null);
         pending = { next, tick, tsMs };
         if (timer) return;
-        const wait = Math.max(0, REDRAW_MS - (Date.now() - lastFlush));
+        const wait = Math.max(0, CHART_MS - (Date.now() - lastFlush));
         timer = window.setTimeout(() => {
           timer = 0;
-          flush();
+          flushCharts();
         }, wait);
       },
       onError: (err) => {
@@ -218,7 +244,7 @@ function PaperBody() {
       if (timer) window.clearTimeout(timer);
       pending = null;
     };
-  }, [paperMarket, address, applyStake]);
+  }, [paperMarket, address, applyStake, paintStake, applyChart]);
 
   const revenueSeed = useMemo((): RevenuePoint[] | null => {
     if (historySeed == null) return null;
@@ -232,7 +258,11 @@ function PaperBody() {
     });
   }, [historySeed]);
 
-  const liveRevenue = liveHistory
+  const labelRevenue = stake
+    ? parseAmount(stake.total_staker_rewards)
+    : null;
+
+  const chartRevenue = liveHistory
     ? Math.max(
         liveHistory.total_staking_reward,
         liveHistory.staking_revenue,
@@ -243,10 +273,10 @@ function PaperBody() {
     if (revenueSeed == null) return null;
     return sumPositiveRevenueDelta(
       revenueSeed,
-      liveRevenue,
+      labelRevenue,
       PAPER_REVENUE_WINDOW_MS,
     );
-  }, [revenueSeed, liveRevenue]);
+  }, [revenueSeed, labelRevenue]);
 
   const runAction = async (
     label: string,
@@ -303,15 +333,15 @@ function PaperBody() {
   const stakedHuman = stake ? parseAmount(stake.staked) : 0;
 
   const mintParams = useMemo((): PaperMintCurveParams | null => {
-    if (!stake) return null;
+    if (!chartStake) return null;
     return {
-      flatThreshold: stake.flat_threshold_raw ?? 0,
-      flatRatePpm: stake.flat_rate_ppm ?? 0,
-      tailDecayScale: stake.tail_decay_scale_raw ?? 0,
-      trackedLp: stake.tracked_lp_raw ?? 0,
-      tailHwm: stake.tail_hwm_raw ?? 0,
+      flatThreshold: chartStake.flat_threshold_raw ?? 0,
+      flatRatePpm: chartStake.flat_rate_ppm ?? 0,
+      tailDecayScale: chartStake.tail_decay_scale_raw ?? 0,
+      trackedLp: chartStake.tracked_lp_raw ?? 0,
+      tailHwm: chartStake.tail_hwm_raw ?? 0,
     };
-  }, [stake]);
+  }, [chartStake]);
 
   const mintRateLabel = stake?.mint_rate
     ? `${formatAmount(stake.mint_rate)} PAPER/$`
@@ -470,7 +500,7 @@ function PaperBody() {
               </div>
               <PaperStakingRevenueBars
                 seed={revenueSeed}
-                live={liveRevenue}
+                live={chartRevenue}
                 windowMs={PAPER_REVENUE_WINDOW_MS}
               />
             </section>
@@ -535,12 +565,10 @@ function PaperBody() {
                 <div className="house-oi-legend">
                   <span className="house-metric-legend">
                     1h{" "}
-                    {liveHistory
-                      ? formatUsd(
-                          liveHistory.total_paper_supply,
-                          liveHistory.total_paper_supply >= 1000 ? 0 : 2,
-                        )
-                      : paperAmt(stake.total_supply)}
+                    {formatUsd(
+                      parseAmount(stake.total_supply),
+                      parseAmount(stake.total_supply) >= 1000 ? 0 : 2,
+                    )}
                   </span>
                 </div>
               </div>
@@ -560,9 +588,7 @@ function PaperBody() {
                 <div className="house-oi-legend">
                   <span className="house-metric-legend">
                     1h{" "}
-                    {liveHistory
-                      ? `$${formatUsd(liveHistory.total_staking_reward, 2)}`
-                      : money(stake.total_staker_rewards)}
+                    {money(stake.total_staker_rewards)}
                   </span>
                 </div>
               </div>

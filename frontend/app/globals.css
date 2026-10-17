@@ -912,13 +912,13 @@ button {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .paper-shell .paper-main > .paper-layout {
   flex: 1 1 auto;
-  min-height: 100%;
-  height: auto;
+  min-height: 0;
+  height: 100%;
 }
 
 .paper-head {
@@ -937,11 +937,11 @@ button {
 .paper-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: repeat(4, minmax(min-content, 1fr));
+  grid-template-rows: repeat(4, minmax(0, 1fr));
   gap: var(--shell-gap);
   flex: 1 1 auto;
-  min-height: 100%;
-  height: auto;
+  min-height: 0;
+  height: 100%;
   align-items: stretch;
 }
 
@@ -952,8 +952,9 @@ button {
   align-items: stretch;
   width: 100%;
   max-width: 100%;
-  min-height: 100%;
-  height: auto;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   box-sizing: border-box;
 }
 
@@ -997,10 +998,11 @@ button {
 .paper-reward-chart-card,
 .paper-layout > .paper-activity-card {
   min-width: 0;
-  min-height: 200px;
-  height: auto;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .paper-history-chart-card .paper-stake-history-curve,
@@ -1013,15 +1015,15 @@ button {
 }
 
 .paper-row-grid > .house-card {
-  min-height: 180px;
-  height: auto;
-  overflow: visible;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
   display: flex;
   flex-direction: column;
 }
 
 .paper-row-grid > .house-card.paper-actions-card {
-  min-height: 260px;
+  min-height: 0;
 }
 
 .paper-row-grid > .house-card > .ticket-stats,
@@ -1285,10 +1287,24 @@ button {
     grid-row: auto;
   }
 
+  .paper-history-chart-card,
+  .paper-revenue-card,
+  .paper-reward-chart-card,
+  .paper-layout > .paper-activity-card {
+    height: auto;
+    min-height: 220px;
+  }
+
+  .paper-layout > .paper-activity-card {
+    max-height: 440px;
+  }
+
   .paper-history-chart-card .paper-stake-history-curve,
   .paper-reward-chart-card .paper-reward-curve,
   .paper-revenue-card .paper-revenue-bars {
     min-height: 140px;
+    height: 180px;
+    flex: 0 0 180px;
   }
 }
 
@@ -1468,9 +1484,9 @@ button {
   .house-row-grid .house-oi-chart-card .house-oi-curve,
   .house-queue-debt-card .house-oi-curve,
   .house-queue-track-box {
-    flex: none;
-    height: 180px;
-    min-height: 180px;
+    flex: 0 0 168px;
+    height: 168px;
+    min-height: 168px;
   }
 
   .house-card > .ticket-stats {
@@ -1985,14 +2001,14 @@ button {
 
 .paper-layout > .house-card,
 .paper-row-grid > .house-card {
-  height: auto;
-  min-height: max(180px, max-content);
-  overflow: visible;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
 }
 
 .paper-layout > .house-card.paper-actions-card,
 .paper-row-grid > .house-card.paper-actions-card {
-  min-height: max-content;
+  min-height: 0;
 }
 
 .paper-actions-card > *,
@@ -2013,8 +2029,8 @@ button {
 .paper-layout > .paper-revenue-card,
 .paper-layout > .paper-reward-chart-card,
 .paper-layout > .paper-activity-card {
-  min-height: 200px;
-  height: auto;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
 }
 
@@ -2201,5 +2217,119 @@ button {
   .pos-table-open .pos-close-btn {
     padding: 6px 8px;
     font-size: 14px;
+  }
+}
+
+@media (max-width: 1100px) {
+  .paper-shell.paper-shell-with-activity {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .paper-shell .paper-main {
+    overflow: visible;
+    flex: 0 0 auto;
+  }
+
+  .paper-shell .paper-main > .paper-layout {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .paper-shell .paper-layout > .paper-row-grid {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .paper-shell .paper-layout .paper-row-grid > .house-card {
+    height: auto;
+    min-height: max-content;
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .paper-shell .paper-layout > .paper-revenue-card,
+  .paper-shell .paper-layout > .paper-history-chart-card,
+  .paper-shell .paper-layout > .paper-reward-chart-card,
+  .paper-shell .paper-layout > .paper-activity-card {
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    flex: 0 0 auto;
+  }
+
+  .paper-shell .paper-layout > .paper-revenue-card .paper-revenue-bars,
+  .paper-shell .paper-layout > .paper-history-chart-card .paper-stake-history-curve,
+  .paper-shell .paper-layout > .paper-reward-chart-card .paper-reward-curve {
+    flex: 0 0 168px;
+    height: 168px;
+    min-height: 168px;
+  }
+
+  .paper-shell .paper-layout > .paper-activity-card {
+    height: 280px;
+    max-height: 280px;
+  }
+
+  .house-shell {
+    height: auto;
+    max-height: none;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .house-shell .house-main {
+    overflow: visible;
+    flex: 0 0 auto;
+  }
+
+  .house-shell .house-main > .house-stack {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+  }
+
+  .house-shell .house-stack > .house-row-grid,
+  .house-shell .house-stack > .house-queue-lp-grid {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 0;
+    grid-row: auto;
+    overflow: visible;
+  }
+
+  .house-shell .house-stack .house-card {
+    height: auto;
+    min-height: max-content;
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+
+  .house-shell .house-stack .house-metric-chart-card,
+  .house-shell .house-stack .house-oi-chart-card,
+  .house-shell .house-stack .house-queue-debt-card,
+  .house-shell .house-stack .house-queue-wide-card {
+    height: auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .house-shell .house-stack .house-metric-chart-card .house-oi-curve,
+  .house-shell .house-stack .house-oi-chart-card .house-oi-curve,
+  .house-shell .house-stack .house-queue-debt-card .house-oi-curve,
+  .house-shell .house-stack .house-queue-track-box {
+    flex: 0 0 168px;
+    height: 168px;
+    min-height: 168px;
   }
 }
