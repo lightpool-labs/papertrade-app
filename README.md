@@ -10,43 +10,49 @@ cd papertrade-app
 
 ## Step 1
 
-Install toolchain / deps as needed (Rust, Node, `cargo-watch` optional for backend HMR).
+Install the toolchain. Tools that are already installed are skipped.
 
 ```bash
-# frontend
-cd frontend && npm install && cd ..
+./scripts/download-toolchain.sh
 ```
 
 ## Step 2
 
-Build or obtain LightPool node (with paper module), indexer, and oracle binaries
-(e.g. via `lightpool-node` release build, or the stocks `download-and-build.sh`
-layout). `./scripts/dev.sh start` uses `lightpool-node/bin/lightpool` when present.
+Download the other repositories and build them. Repositories that are already cloned are skipped.
+
+```bash
+./scripts/download-and-build.sh
+```
+
+The script clones these repositories next to this app: `lightpool`, `lightpool-node`, `lightpool-crypto`, `lightpool-sdk-rust`, `lightpool-clob-indexer`, `lightpool-bridge`, `lightpool-oracle`, and `lightpool-tutorials`. It then downloads Reth and builds the node (paper module), indexer, bridge, oracle, and paper-keeper.
 
 ## Step 3
 
-Start the local stack (Reth + USDC bridge + node + indexer + oracle + bootstrap + app):
+Start the local stack (Reth + USDC bridge + node + indexer + oracle + bootstrap + app + keeper).
 
 ```bash
-./scripts/dev.sh start
+./scripts/start-paper.sh start
 ```
 
 At the end it prints MetaMask accounts, Reth RPC / chain id, bridge, and USDC ERC20.
 Import Anvil #1, add the Reth network + USDC token, open http://127.0.0.1:3000/trade/btc → Connect → Deposit.
 
-`hold_opens` still funds on LightPool only (`--fund-usdc`); do not mint 1000 accounts on Reth.
+To generate trading, start `hold-opens` after the stack is up. Run it from `tests/` so the default paths resolve.
 
-If you previously started without bridge, run `./scripts/dev.sh stop && ./scripts/dev.sh clean` once before start. 
+```bash
+cd tests
+cargo run --release --bin hold-opens
+```
 
 Stop:
 
 ```bash
-./scripts/dev.sh stop
+./scripts/start-paper.sh stop
 ```
 
 Status / clean runtime data (stop first):
 
 ```bash
-./scripts/dev.sh status
-./scripts/dev.sh clean
+./scripts/start-paper.sh status
+./scripts/start-paper.sh clean
 ```
