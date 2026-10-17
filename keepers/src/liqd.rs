@@ -240,12 +240,17 @@ pub async fn run_loop(
                     for spot in spots {
                         match client.get_oracle_mark(&spot).await {
                             Ok(mark) => {
+                                let price_raw = if mark.mark_price_raw > 0 {
+                                    mark.mark_price_raw
+                                } else {
+                                    mark.oracle_price_raw
+                                };
                                 if let Err(err) = scan_spot(
                                     &client,
                                     signer,
                                     &book,
                                     &spot,
-                                    mark.oracle_price_raw,
+                                    price_raw,
                                 ).await {
                                     tracing::warn!(%spot, error = %err, "liqd reconcile scan failed");
                                 }
@@ -396,14 +401,17 @@ async fn handle_oracle_tick(
     if spot.is_empty() {
         return Ok(());
     }
-    // Chain liqd uses oracle_price.
-    let Some(oracle_raw) = ev.oracle_price_raw.or(ev.mark_price_raw) else {
+    // Chain liqd reads the clamped price stored on the spot market.
+    // The event reports that value as mark_price; oracle_price is the unclamped median.
+    let price_raw = ev
+        .mark_price_raw
+        .filter(|price| *price > 0)
+        .or(ev.oracle_price_raw)
+        .filter(|price| *price > 0);
+    let Some(price_raw) = price_raw else {
         return Ok(());
     };
-    if oracle_raw == 0 {
-        return Ok(());
-    }
-    scan_spot(client, signer, book, spot, oracle_raw).await
+    scan_spot(client, signer, book, spot, price_raw).await
 }
 
 async fn scan_spot(
