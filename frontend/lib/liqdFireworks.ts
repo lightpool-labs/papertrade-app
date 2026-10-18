@@ -103,8 +103,16 @@ function ensureCanvas() {
   window.addEventListener("resize", resize);
 }
 
-const ink = document.createElement("canvas");
-const inkCtx = ink.getContext("2d", { willReadFrequently: true });
+let ink: HTMLCanvasElement | null = null;
+let inkCtx: CanvasRenderingContext2D | null = null;
+
+/** Lazily created on first client use; module must stay SSR-safe. */
+function ensureInk(): CanvasRenderingContext2D | null {
+  if (inkCtx) return inkCtx;
+  ink = document.createElement("canvas");
+  inkCtx = ink.getContext("2d", { willReadFrequently: true });
+  return inkCtx;
+}
 
 function headSize(m: Missile, climb: number): number {
   return 13 * (1 + climb * (0.9 + m.t * 1.2));
@@ -113,19 +121,21 @@ function headSize(m: Missile, climb: number): number {
 function burst(m: Missile) {
   const size = headSize(m, 1);
   const font = `600 ${Math.round(size)}px ui-sans-serif, system-ui, sans-serif`;
-  if (inkCtx) {
-    inkCtx.font = font;
-    const width = Math.ceil(inkCtx.measureText(m.label).width) + 8;
+  const ic = ensureInk();
+  const inkEl = ink;
+  if (ic && inkEl) {
+    ic.font = font;
+    const width = Math.ceil(ic.measureText(m.label).width) + 8;
     const height = Math.ceil(size * 1.35);
-    ink.width = width;
-    ink.height = height;
-    inkCtx.font = font;
-    inkCtx.textAlign = "left";
-    inkCtx.textBaseline = "middle";
-    inkCtx.clearRect(0, 0, width, height);
-    inkCtx.fillStyle = "#000";
-    inkCtx.fillText(m.label, 4, height / 2);
-    const pixels = inkCtx.getImageData(0, 0, width, height).data;
+    inkEl.width = width;
+    inkEl.height = height;
+    ic.font = font;
+    ic.textAlign = "left";
+    ic.textBaseline = "middle";
+    ic.clearRect(0, 0, width, height);
+    ic.fillStyle = "#000";
+    ic.fillText(m.label, 4, height / 2);
+    const pixels = ic.getImageData(0, 0, width, height).data;
     const life = 1.05;
     const step = size > 28 ? 3 : 2;
     const originX = m.x - width / 2;
@@ -330,7 +340,9 @@ function spawnInk(
 }
 
 export function blowPositionRow(row: HTMLElement) {
-  if (!inkCtx) return;
+  const ic = ensureInk();
+  const inkEl = ink;
+  if (!ic || !inkEl) return;
   ensureCanvas();
   const cells = row.querySelectorAll("td");
   cells.forEach((cell) => {
@@ -341,23 +353,23 @@ export function blowPositionRow(row: HTMLElement) {
     const style = getComputedStyle(cell);
     const size = Math.max(12, parseFloat(style.fontSize) || 13) * 1.06;
     const font = `${style.fontWeight} ${size}px ${style.fontFamily}`;
-    inkCtx.font = font;
-    const width = Math.max(8, Math.ceil(inkCtx.measureText(text).width) + 4);
+    ic.font = font;
+    const width = Math.max(8, Math.ceil(ic.measureText(text).width) + 4);
     const height = Math.ceil(size * 1.4);
-    ink.width = width;
-    ink.height = height;
-    inkCtx.font = font;
-    inkCtx.textAlign = "left";
-    inkCtx.textBaseline = "middle";
-    inkCtx.clearRect(0, 0, width, height);
-    inkCtx.fillStyle = "#000";
-    inkCtx.fillText(text, 2, height / 2);
+    inkEl.width = width;
+    inkEl.height = height;
+    ic.font = font;
+    ic.textAlign = "left";
+    ic.textBaseline = "middle";
+    ic.clearRect(0, 0, width, height);
+    ic.fillStyle = "#000";
+    ic.fillText(text, 2, height / 2);
     spawnInk(
       rect.left,
       rect.top + rect.height / 2 - height / 2,
       width,
       height,
-      inkCtx.getImageData(0, 0, width, height).data,
+      ic.getImageData(0, 0, width, height).data,
       3,
       cssRgb(style.color),
     );

@@ -38,6 +38,8 @@ pub struct KeeperConfig {
     pub poll_interval: Duration,
     /// Slow HTTP reconcile for liqd open-book (event path is WS-driven).
     pub liqd_reconcile_interval: Duration,
+    /// Parallel tasks that submit a signed liqd and wait for the receipt.
+    pub liqd_senders: usize,
     pub enable_liqd: bool,
     pub enable_harvest: bool,
     pub enable_push_fees: bool,
@@ -70,6 +72,11 @@ impl KeeperConfig {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(60_000),
             ),
+            liqd_senders: env::var("PAPER_KEEPER_LIQD_SENDERS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8)
+                .clamp(1, 64),
             enable_liqd: env_flag("PAPER_KEEPER_LIQD", true),
             enable_harvest: env_flag("PAPER_KEEPER_HARVEST", true),
             enable_push_fees: env_flag("PAPER_KEEPER_PUSH_FEES", true),

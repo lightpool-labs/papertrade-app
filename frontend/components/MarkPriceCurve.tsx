@@ -12,6 +12,8 @@ type Props = {
   seed?: Point[] | null;
   /** Visible time window in ms (default 30s). */
   windowMs?: number;
+  /** Bump to drop all buffered history (e.g. demo seek/replay). */
+  epoch?: number;
 };
 
 const PAD = { top: 16, right: 72, bottom: 28, left: 12 };
@@ -28,13 +30,19 @@ const SAMPLE_MS = 80;
  * History is kept forever. Left-drag pans; after release the window keeps
  * scrolling right→left at normal wall-clock speed (optional delay via pan).
  */
-export function MarkPriceCurve({ mark, seed = null, windowMs = 30_000 }: Props) {
+export function MarkPriceCurve({
+  mark,
+  seed = null,
+  windowMs = 30_000,
+  epoch,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const pointsRef = useRef<Point[]>([]);
   const displayRef = useRef<number | null>(null);
   const targetRef = useRef<number | null>(null);
   const sessionOpenRef = useRef<number | null>(null);
+  const markRef = useRef<number | null>(null);
   /** How far the right edge sits behind live now (ms). Always scrolls with time. */
   const panBackMsRef = useRef(0);
   const draggingRef = useRef(false);
@@ -71,13 +79,30 @@ export function MarkPriceCurve({ mark, seed = null, windowMs = 30_000 }: Props) 
         pointsRef.current = [{ t: now, p: mark }];
       }
       panBackMsRef.current = 0;
-      return;
-    }
-    const last = pointsRef.current[pointsRef.current.length - 1];
-    if (!last || last.p !== mark || now - last.t >= SAMPLE_MS) {
-      pointsRef.current.push({ t: now, p: mark });
     }
   }, [mark]);
+
+  useEffect(() => {
+    markRef.current = mark;
+  }, [mark]);
+
+  useEffect(() => {
+    if (epoch === undefined) return;
+    pointsRef.current = [];
+    displayRef.current = null;
+    targetRef.current = null;
+    sessionOpenRef.current = null;
+    panBackMsRef.current = 0;
+    seedKeyRef.current = "";
+    const m = markRef.current;
+    if (m != null && Number.isFinite(m) && m > 0) {
+      const now = Date.now();
+      pointsRef.current = [{ t: now, p: m }];
+      displayRef.current = m;
+      targetRef.current = m;
+      sessionOpenRef.current = m;
+    }
+  }, [epoch]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -171,11 +196,42 @@ export function MarkPriceCurve({ mark, seed = null, windowMs = 30_000 }: Props) 
       const H = rect.height;
       ctx.clearRect(0, 0, W, H);
 
+      const drawWatermark = (
+        x0: number,
+        y0: number,
+        boxW: number,
+        boxH: number,
+      ) => {
+        const wmSize = Math.max(48, Math.min(80, boxH * 0.22));
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x0, y0, boxW, boxH);
+        ctx.clip();
+        ctx.translate(x0 + boxW / 2, y0 + boxH / 2);
+        ctx.rotate(-Math.PI / 4);
+        ctx.font = `600 ${Math.round(wmSize)}px ui-sans-serif, system-ui, sans-serif`;
+        ctx.fillStyle = "rgba(139, 147, 161, 0.16)";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const gapX = wmSize * 6.4;
+        const gapY = wmSize * 2.35;
+        for (let row = -1; row <= 1; row++) {
+          const y = row * gapY;
+          const shift = (row & 1) * (gapX / 2);
+          for (let col = -5; col <= 5; col++) {
+            ctx.fillText("lightpool", col * gapX + shift, y);
+          }
+        }
+        ctx.restore();
+      };
+
       if (display == null) {
+        drawWatermark(0, 0, W, H);
         ctx.fillStyle = MUTED;
         ctx.font = "12px ui-sans-serif, system-ui, sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText("Waiting for mark…", W / 2, H / 2);
+        ctx.textBaseline = "middle";
+        ctx.fillText("Waiting for mark…", W / 2, H / 2 + 36);
         raf = requestAnimationFrame(frame);
         return;
       }
@@ -254,6 +310,8 @@ export function MarkPriceCurve({ mark, seed = null, windowMs = 30_000 }: Props) 
       ctx.beginPath();
       ctx.rect(PAD.left, PAD.top, plotW, plotH);
       ctx.clip();
+
+      drawWatermark(PAD.left, PAD.top, plotW, plotH);
 
       if (visible.length >= 2) {
         const baseY = yOf(lo);

@@ -5,6 +5,7 @@ import {
   subscribePaperPositions,
   type PaperPositionEvent,
 } from "@/lib/paperPositionsWs";
+import { DEMO_EVENT } from "@/lib/demo";
 import { launchLiqdAsh, fireworksOn } from "@/lib/liqdFireworks";
 import { priceCurveXSpan } from "@/lib/priceCurveHit";
 import { parseAmount } from "@/lib/math";
@@ -16,6 +17,10 @@ type Kind = "opened" | "closed" | "liquidated";
 
 type Props = {
   market?: string;
+  /** Demo mode: ignore the indexer feed, take window demo-liq events instead. */
+  demo?: boolean;
+  /** Liquidation fireworks. Trade page only. */
+  fireworks?: boolean;
 };
 
 function normalizeKind(event: string | undefined): Kind | null {
@@ -187,9 +192,11 @@ function makeChip(ev: PaperPositionEvent, kind: Kind, id: string): HTMLSpanEleme
 /**
  * Hover: pin a clone + tip; the banner stream keeps running underneath.
  */
-export function HouseActivityBanner({ market }: Props) {
+export function HouseActivityBanner({ market, demo = false, fireworks = false }: Props) {
   const marketKey = market?.trim().toLowerCase() ?? "";
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const fireworksRef = useRef(fireworks);
+  fireworksRef.current = fireworks;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -230,7 +237,6 @@ export function HouseActivityBanner({ market }: Props) {
     let freezeClone: HTMLElement | null = null;
     let raf = 0;
     let lastTick = 0;
-    let speed = MIN_SPEED;
 
     const placeBoat = (boat: Boat) => {
       boat.el.style.transform = `translate3d(${boat.x}px, -50%, 0)`;
@@ -274,7 +280,10 @@ export function HouseActivityBanner({ market }: Props) {
       };
 
       while (waiting.length > 0) {
-        const last = boats[boats.length - 1];
+        let last: Boat | undefined;
+        for (const boat of boats) {
+          if (!last || boat.x + boat.w > last.x + last.w) last = boat;
+        }
         const behind = last ? last.x + last.w + gap : null;
         if (behind != null && behind > viewW) break;
 
@@ -327,19 +336,19 @@ export function HouseActivityBanner({ market }: Props) {
       lastTick = now;
       const gap = boatGap();
       const spacing = (boats[boats.length - 1]?.w ?? 148) + gap;
-      const target = Math.max(MIN_SPEED, eventsPerSecond() * spacing);
-      speed = target;
-      const dx = speed * dt;
-      for (const boat of boats) {
-        boat.x -= dx;
-        placeBoat(boat);
-      }
-      if (fireworksOn()) {
+      const paced = eventsPerSecond() * spacing;
+      const liqdSpeed = Math.max(MIN_SPEED, viewWidth() * 0.8, paced);
+      const tradeSpeed = Math.max(viewWidth() * 0.12, paced);
+      if (fireworksRef.current && fireworksOn()) {
         const span = priceCurveXSpan();
         const hostBox = host.getBoundingClientRect();
         const fireY = hostBox.top + hostBox.height / 2;
         for (const boat of boats) {
           const chip = boat.el;
+          const boatSpeed = chip.dataset.kind === "liquidated" ? liqdSpeed : tradeSpeed;
+          const dx = boatSpeed * dt;
+          boat.x -= dx;
+          placeBoat(boat);
           if (chip.dataset.kind !== "liquidated" || chip.dataset.liqdFired) continue;
           const cx = hostBox.left + boat.x + boat.w / 2;
           const prevCx = cx + dx;
@@ -361,12 +370,20 @@ export function HouseActivityBanner({ market }: Props) {
           chip.dataset.liqdFired = "1";
           launchLiqdAsh(fireX, fireY, loss, chip.dataset.id ?? "");
         }
+      } else {
+        for (const boat of boats) {
+          const boatSpeed =
+            boat.el.dataset.kind === "liquidated" ? liqdSpeed : tradeSpeed;
+          boat.x -= boatSpeed * dt;
+          placeBoat(boat);
+        }
       }
-      while (boats.length > 0 && boats[0].x + boats[0].w < 0) {
-        const gone = boats.shift();
-        if (!gone) break;
+      for (let i = boats.length - 1; i >= 0; i--) {
+        const gone = boats[i];
+        if (gone.x + gone.w >= 0) continue;
         if (gone.el === hoverChip) hoverChip = null;
         gone.el.remove();
+        boats.splice(i, 1);
       }
       releaseWaiting();
       if (boats.length === 0 && waiting.length === 0) idle.hidden = false;
@@ -489,41 +506,56 @@ export function HouseActivityBanner({ market }: Props) {
       chip.addEventListener("mouseleave", onChipLeave);
     };
 
-    const unsub = subscribePaperPositions({
-      onEvent: (ev: PaperPositionEvent) => {
-        const kind = normalizeKind(ev.event);
-        if (!kind) return;
-        const m = (ev.market ?? "").trim().toLowerCase();
-        if (marketKey && m && m !== marketKey) return;
+    const onIncoming = (ev: PaperPositionEvent) => {
+      const kind = normalizeKind(ev.event);
+      if (!kind) return;
+      const m = (ev.market ?? "").trim().toLowerCase();
+      if (marketKey && m && m !== marketKey) return;
 
-        seq += 1;
-        const chip = makeChip(ev, kind, `${seq}-${ev.position ?? 0}-${kind}`);
-        if (seq % 20 === 0) {
-          const colors = ["#e11d48", "#f59e0b", "#2563eb", "#16a34a", "#7c3aed", "#111827"];
-          const n = seq / 20;
-          const flag = document.createElement("span");
-          flag.className = "house-activity-flag";
-          flag.textContent = String(seq);
-          flag.style.background = colors[(n - 1) % colors.length];
-          chip.prepend(flag);
-        }
-        if (kind === "liquidated") {
-          chip.dataset.liqdLoss = String(chipAmount(ev, kind));
-        }
-        bindChipHover(chip);
-        idle.hidden = true;
-        enqueueBoat(chip);
-      },
-    });
+      seq += 1;
+      const demoId = (ev as { demo_id?: string }).demo_id;
+      const chip = makeChip(
+        ev,
+        kind,
+        demoId ?? `${seq}-${ev.position ?? 0}-${kind}`,
+      );
+      if (seq % 20 === 0) {
+        const colors = ["#e11d48", "#f59e0b", "#2563eb", "#16a34a", "#7c3aed", "#111827"];
+        const n = seq / 20;
+        const flag = document.createElement("span");
+        flag.className = "house-activity-flag";
+        flag.textContent = String(seq);
+        flag.style.background = colors[(n - 1) % colors.length];
+        chip.prepend(flag);
+      }
+      if (kind === "liquidated") {
+        chip.dataset.liqdLoss = String(chipAmount(ev, kind));
+      }
+      bindChipHover(chip);
+      idle.hidden = true;
+      enqueueBoat(chip);
+    };
+
+    let cleanupFeed: () => void;
+    if (demo) {
+      const onDemo = (e: Event) => {
+        const detail = (e as CustomEvent<PaperPositionEvent>).detail;
+        if (detail) onIncoming(detail);
+      };
+      window.addEventListener(DEMO_EVENT, onDemo);
+      cleanupFeed = () => window.removeEventListener(DEMO_EVENT, onDemo);
+    } else {
+      cleanupFeed = subscribePaperPositions({ onEvent: onIncoming });
+    }
 
     return () => {
-      unsub();
+      cleanupFeed();
       window.cancelAnimationFrame(raf);
       hideTip();
       tip.remove();
       host.replaceChildren();
     };
-  }, [marketKey]);
+  }, [marketKey, demo]);
 
   return (
     <div

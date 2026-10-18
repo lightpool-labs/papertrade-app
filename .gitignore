@@ -7,5 +7,7 @@ frontend/.env.local
 frontend/.env*.local
 keepers/target/
 tests/target/
+demo/.venv/
+demo/data/
 *.log
 .DS_Store

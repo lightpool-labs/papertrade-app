@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/TopBar";
 import { HouseActivityBanner } from "@/components/HouseActivityBanner";
+import { DemoPanel } from "@/components/DemoPanel";
+import { useDemoPlayer } from "@/hooks/useDemoPlayer";
 import { InstrumentHeader } from "@/components/InstrumentHeader";
 import { CandleChart } from "@/components/CandleChart";
 import { MarkPriceCurve } from "@/components/MarkPriceCurve";
@@ -27,14 +29,45 @@ import {
   fetchHlDayContext,
 } from "@/lib/hlDayChange";
 import { subscribeOracleMark } from "@/lib/markWs";
-import { sumUnrealizedPnl } from "@/lib/math";
-import { POS_LIQD_EVENT } from "@/lib/liqdFireworks";
+import { demoAccount } from "@/lib/demo";
+import { POS_LIQD_EVENT, setFireworksOn } from "@/lib/liqdFireworks";
+import { parseAmount, sumUnrealizedPnl } from "@/lib/math";
 import { subscribePaperUser } from "@/lib/paperUserWs";
+
+/** Sync check for the ?demo= param, used before the mount effect runs. */
+function demoParamSet(): boolean {
+  if (typeof window === "undefined") return false;
+  const id = new URLSearchParams(window.location.search).get("demo");
+  return id != null && id.trim().length > 0;
+}
+
+/** Header fallback when the strategy backend is not running in demo mode. */
+const DEMO_MARKET: Market = {
+  paper_market: "demo",
+  quote_decimals: 6,
+  liq_buffer_ppm: 0,
+  id: 0,
+  slug: "btc",
+  name: "BTC",
+  hl_symbol: "BTC",
+  price_market: "",
+  max_leverage: 1000,
+  min_margin: 0,
+  retired: false,
+};
 
 function TradeBody() {
   const params = useParams<{ slug?: string }>();
   const slug = (params?.slug ?? "btc").toLowerCase();
   const { address } = useWallet();
+
+  const [demoId, setDemoId] = useState<string | null>(null);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("demo");
+    setDemoId(id && id.trim().length > 0 ? id.trim() : null);
+  }, []);
+  const demo = useDemoPlayer(demoId, address);
+  const demoActive = demo.active;
 
   const [markets, setMarkets] = useState<Market[]>([]);
   const [selected, setSelected] = useState<Market | null>(null);
@@ -71,9 +104,14 @@ function TradeBody() {
         next.find((m) => m.slug.toLowerCase() === slug) ?? next[0] ?? null;
       setSelected(hit);
     } catch (err) {
+      if (demoActive || demoParamSet()) {
+        setMarkets([DEMO_MARKET]);
+        setSelected(DEMO_MARKET);
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to load markets");
     }
-  }, [slug]);
+  }, [slug, demoActive]);
 
   const applyOpenSnapshot = useCallback(
     (next: PaperPositionOpen[]) => {
@@ -125,6 +163,11 @@ function TradeBody() {
 
   const refreshAccountAndPositions = useCallback(
     async (opts?: { silent?: boolean; opens?: boolean }) => {
+      if (demoActive) {
+        setPosError(null);
+        setPosLoading(false);
+        return;
+      }
       const silent = opts?.silent === true;
       const wantOpens = opts?.opens !== false;
       const refreshOpens =
@@ -164,7 +207,7 @@ function TradeBody() {
         if (!silent) setPosLoading(false);
       }
     },
-    [address, selected?.paper_market, applyOpenSnapshot],
+    [address, selected?.paper_market, applyOpenSnapshot, demoActive],
   );
 
   const removeOpenPosition = useCallback(
@@ -207,7 +250,28 @@ function TradeBody() {
   }, [refreshAccountAndPositions]);
 
   useEffect(() => {
-    if (!address?.trim()) return;
+    if (demoActive) setFireworksOn(true);
+  }, [demoActive]);
+
+  useEffect(() => {
+    if (!demoActive) return;
+    const instrument = selected?.id ?? 0;
+    const withInstrument = <T extends { instrument: number }>(rows: T[]): T[] =>
+      rows.map((row) =>
+        row.instrument === instrument ? row : { ...row, instrument },
+      );
+    const open = withInstrument(demo.openPositions);
+    setOpenPositions(open);
+    setHistory(withInstrument(demo.history));
+    const margin = open.reduce((sum, row) => {
+      const n = parseAmount(row.margin);
+      return sum + (Number.isFinite(n) ? n : 0);
+    }, 0);
+    setAccount(demoAccount(address, margin));
+  }, [demoActive, demo.openPositions, demo.history, selected?.id, address]);
+
+  useEffect(() => {
+    if (!address?.trim() || demoActive) return;
     let debounce: number | null = null;
     const unsub = subscribePaperUser(address, {
       onEvent: (ev) => {
@@ -248,10 +312,10 @@ function TradeBody() {
       if (debounce != null) window.clearTimeout(debounce);
       unsub();
     };
-  }, [address, refreshAccountAndPositions, removeOpenPosition]);
+  }, [address, refreshAccountAndPositions, removeOpenPosition, demoActive]);
 
   useEffect(() => {
-    if (!selected?.hl_symbol?.trim()) {
+    if (demoActive || !selected?.hl_symbol?.trim()) {
       prevDayPxRef.current = null;
       setChangePct(null);
       return;
@@ -277,10 +341,10 @@ function TradeBody() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selected?.hl_symbol]);
+  }, [selected?.hl_symbol, demoActive]);
 
   useEffect(() => {
-    if (!selected?.slug?.trim() || !selected.price_market?.trim()) {
+    if (demoActive || !selected?.slug?.trim() || !selected.price_market?.trim()) {
       setMarkSeed(null);
       return;
     }
@@ -313,13 +377,15 @@ function TradeBody() {
     return () => {
       cancelled = true;
     };
-  }, [selected?.slug, selected?.price_market]);
+  }, [selected?.slug, selected?.price_market, demoActive]);
 
   useEffect(() => {
-    if (!selected?.price_market?.trim()) {
-      setMark(null);
-      markRef.current = null;
-      setChangePct(null);
+    if (demoActive || !selected?.price_market?.trim()) {
+      if (!demoActive) {
+        setMark(null);
+        markRef.current = null;
+        setChangePct(null);
+      }
       return;
     }
 
@@ -337,11 +403,14 @@ function TradeBody() {
     return () => {
       unsub();
     };
-  }, [selected]);
+  }, [selected, demoActive]);
+
+  const viewMark = demoActive ? demo.mark : mark;
+  const viewChangePct = demoActive ? demo.changePct : changePct;
 
   const liveOpenPnl = useMemo(
-    () => sumUnrealizedPnl(openPositions, mark, selected?.id ?? null),
-    [openPositions, mark, selected?.id],
+    () => sumUnrealizedPnl(openPositions, viewMark, selected?.id ?? null),
+    [openPositions, viewMark, selected?.id],
   );
 
   return (
@@ -354,17 +423,18 @@ function TradeBody() {
         <InstrumentHeader
           markets={markets}
           selected={selected}
-          mark={mark}
-          changePct={changePct}
+          mark={viewMark}
+          changePct={viewChangePct}
           chartView={chartView}
           onChartViewChange={setChartView}
         />
-        {error ? <div className="banner error">{error}</div> : null}
+        {error && !demoActive ? <div className="banner error">{error}</div> : null}
         {chartView === "tick" ? (
           <MarkPriceCurve
             key={selected?.price_market ?? selected?.slug ?? "none"}
-            mark={mark}
+            mark={viewMark}
             seed={markSeed}
+            epoch={demoActive ? demo.seekSeq : undefined}
           />
         ) : isCandleInterval(chartView) ? (
           <CandleChart market={selected} interval={chartView} />
@@ -373,7 +443,7 @@ function TradeBody() {
 
       <PaperTicket
         market={selected}
-        mark={mark}
+        mark={viewMark}
         account={account}
         accountLoading={posLoading}
         openPnl={liveOpenPnl}
@@ -387,13 +457,15 @@ function TradeBody() {
         loading={posLoading}
         error={posError}
         instrumentId={selected?.id ?? null}
-        mark={mark}
+        mark={viewMark}
         account={account}
         openPnl={liveOpenPnl}
         onClosed={onClosed}
       />
 
-      <HouseActivityBanner market={selected?.paper_market} />
+      {demoActive ? <DemoPanel player={demo} /> : null}
+
+      <HouseActivityBanner market={selected?.paper_market} demo={demoActive} fireworks />
     </div>
   );
 }

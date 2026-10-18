@@ -8,12 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use lightpool_sdk::lightpool_types::SignedTransaction;
 use lightpool_sdk::{
     parse_token_contract, ActionBuilder, PaperLiquidateParams, Signer, TransactionBuilder,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 
 use crate::config::{InstrumentRecord, MarketsFile};
 use crate::indexer::{IndexerHttp, PaperPositionOpen};
@@ -154,6 +155,11 @@ pub struct SideLoops {
 
 /// Event-driven liqd loop: HTTP snapshot, `paper.positions` + `oracle` WS, slow reconcile.
 /// Optionally runs harvest / push_fees on `side_poll` in the same task (Signer is !Send).
+struct LiqdSendPool {
+    client: IndexerHttp,
+    permits: Arc<Semaphore>,
+}
+
 pub async fn run_loop(
     client: IndexerHttp,
     signer: &Signer,
@@ -161,6 +167,7 @@ pub async fn run_loop(
     initial_markets: MarketsFile,
     page_limit: u32,
     reconcile_every: Duration,
+    liqd_senders: usize,
     side: SideLoops,
 ) -> Result<()> {
     let mut markets = initial_markets;
@@ -170,6 +177,10 @@ pub async fn run_loop(
     }
 
     let book = Arc::new(Mutex::new(OpenBook::default()));
+    let send_pool = LiqdSendPool {
+        client: client.clone(),
+        permits: Arc::new(Semaphore::new(liqd_senders.max(1))),
+    };
     load_snapshot(&client, &markets, &price_map, page_limit, &book).await?;
 
     let ws_url = indexer_ws_url(client.base_url());
@@ -199,6 +210,7 @@ pub async fn run_loop(
     tracing::info!(
         opens = book.lock().await.by_key.len(),
         spots = seen_spots.len(),
+        liqd_senders = liqd_senders.max(1),
         "liqd event loop ready (paper.positions + oracle)"
     );
 
@@ -215,9 +227,9 @@ pub async fn run_loop(
             Some(msg) = oracle_rx.recv() => {
                 if let Err(err) = handle_oracle_tick(
                     &msg,
-                    &client,
                     signer,
                     &book,
+                    &send_pool,
                 ).await {
                     tracing::error!(error = %err, "liqd oracle tick failed");
                 }
@@ -246,9 +258,9 @@ pub async fn run_loop(
                                     mark.oracle_price_raw
                                 };
                                 if let Err(err) = scan_spot(
-                                    &client,
                                     signer,
                                     &book,
+                                    &send_pool,
                                     &spot,
                                     price_raw,
                                 ).await {
@@ -386,9 +398,9 @@ async fn handle_position_event(
 
 async fn handle_oracle_tick(
     msg: &Value,
-    client: &IndexerHttp,
     signer: &Signer,
     book: &Arc<Mutex<OpenBook>>,
+    send_pool: &LiqdSendPool,
 ) -> Result<()> {
     let Ok(ev) = serde_json::from_value::<OracleEvent>(msg.clone()) else {
         return Ok(());
@@ -411,13 +423,13 @@ async fn handle_oracle_tick(
     let Some(price_raw) = price_raw else {
         return Ok(());
     };
-    scan_spot(client, signer, book, spot, price_raw).await
+    scan_spot(signer, book, send_pool, spot, price_raw).await
 }
 
 async fn scan_spot(
-    client: &IndexerHttp,
     signer: &Signer,
     book: &Arc<Mutex<OpenBook>>,
+    send_pool: &LiqdSendPool,
     spot: &str,
     oracle_raw: u64,
 ) -> Result<()> {
@@ -441,40 +453,68 @@ async fn scan_spot(
 
     for row in candidates {
         let key = pos_key(&row.market, row.position);
-        match liquidate_one(client, signer, &row, oracle_raw).await {
-            Ok(digest) => {
-                tracing::info!(
-                    position = row.position,
-                    instrument = row.instrument,
-                    owner = %row.owner,
-                    is_long = row.is_long,
-                    oracle_raw,
-                    bust_raw = row.bust_price_raw,
-                    %digest,
-                    "liqd submitted"
-                );
-                // Keep pending until closed/liquidated WS or reconcile removes it.
-            }
+        let tx = match sign_liqd(signer, &row) {
+            Ok(tx) => tx,
             Err(err) => {
                 book.lock().await.pending.remove(&key);
                 tracing::warn!(
                     position = row.position,
                     owner = %row.owner,
                     error = %err,
-                    "liqd failed"
+                    "liqd sign failed"
                 );
+                continue;
             }
-        }
+        };
+        let permit = send_pool
+            .permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow::anyhow!("liqd send pool closed"))?;
+        let client = send_pool.client.clone();
+        let book = Arc::clone(&book);
+        tokio::spawn(async move {
+            let _permit = permit;
+            match client.submit(tx).await {
+                Ok((digest, _block_num, receipt)) if receipt.is_success() => {
+                    tracing::info!(
+                        position = row.position,
+                        instrument = row.instrument,
+                        owner = %row.owner,
+                        is_long = row.is_long,
+                        oracle_raw,
+                        bust_raw = row.bust_price_raw,
+                        %digest,
+                        "liqd submitted"
+                    );
+                }
+                Ok((_digest, block_num, receipt)) => {
+                    book.lock().await.pending.remove(&key);
+                    tracing::warn!(
+                        position = row.position,
+                        owner = %row.owner,
+                        block_num,
+                        status = ?receipt.status,
+                        "liqd receipt failed"
+                    );
+                }
+                Err(err) => {
+                    book.lock().await.pending.remove(&key);
+                    tracing::warn!(
+                        position = row.position,
+                        owner = %row.owner,
+                        error = %err,
+                        "liqd failed"
+                    );
+                }
+            }
+        });
     }
     Ok(())
 }
 
-async fn liquidate_one(
-    client: &IndexerHttp,
-    signer: &Signer,
-    row: &TrackedPos,
-    oracle_raw: u64,
-) -> Result<String> {
+fn sign_liqd(signer: &Signer, row: &TrackedPos) -> Result<SignedTransaction> {
     let paper = parse_token_contract(&row.market).map_err(|e| {
         anyhow::anyhow!("parse paper market {}: {e}", row.market)
     })?;
@@ -487,23 +527,11 @@ async fn liquidate_one(
     .map_err(|e| anyhow::anyhow!("build liquidate_paper: {e}"))?;
 
     let sender = signer.address();
-    let tx = TransactionBuilder::new()
+    TransactionBuilder::new()
         .sender(sender)
         .account(sender)
         .expiration(u64::MAX)
         .add_action(action)
         .build_and_sign_only(signer)
-        .map_err(|e| anyhow::anyhow!("sign liquidate_paper: {e}"))?;
-
-    let (digest, block_num, receipt) = client.submit(tx).await?;
-    if !receipt.is_success() {
-        bail!(
-            "liqd receipt failed position={} oracle={} bust={} status={:?} block={block_num}",
-            row.position,
-            oracle_raw,
-            row.bust_price_raw,
-            receipt.status
-        );
-    }
-    Ok(digest)
+        .map_err(|e| anyhow::anyhow!("sign liquidate_paper: {e}"))
 }

@@ -56,3 +56,10 @@ Status / clean runtime data (stop first):
 ./scripts/start-paper.sh status
 ./scripts/start-paper.sh clean
 ```
+
+## Song demo (Fireworks video)
+
+Record the Fireworks / liquidation-ash UI driven by an MP3: upload a song to
+the demo sidecar, then open `/trade/btc?demo=<session_id>` for a deterministic
+fake mark + liquidation timeline that erupts at the song climax. No chain, no
+wallet transactions. See [`demo/README.md`](./demo/README.md).

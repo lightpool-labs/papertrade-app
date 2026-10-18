@@ -96,6 +96,7 @@ async fn main() -> Result<()> {
         harvest_max = cfg.harvest_max_entries,
         poll_ms = cfg.poll_interval.as_millis(),
         liqd_reconcile_ms = cfg.liqd_reconcile_interval.as_millis(),
+        liqd_senders = cfg.liqd_senders,
         "paper-keeper starting"
     );
 
@@ -145,6 +146,7 @@ async fn main() -> Result<()> {
             markets,
             cfg.page_limit,
             cfg.liqd_reconcile_interval,
+            cfg.liqd_senders,
             SideLoops {
                 // Harvest + push_fees are on dedicated threads above.
                 enable_harvest: false,

@@ -153,7 +153,7 @@ const OpenPositionsTable = memo(function OpenPositionsTable({
   const [compact, setCompact] = useState(false);
 
   useEffect(() => {
-    const query = window.matchMedia("(max-width: 960px)");
+    const query = window.matchMedia("(max-width: 1279px)");
     const apply = () => setCompact(query.matches);
     apply();
     query.addEventListener("change", apply);
@@ -262,6 +262,7 @@ export function PositionsPanel({
 
   const onClose = useCallback(
     async (row: PaperPositionOpen) => {
+      if (row.market === "demo") return;
       const key = posKey(row.market, row.position);
       setCloseError(null);
       setClosingId(key);

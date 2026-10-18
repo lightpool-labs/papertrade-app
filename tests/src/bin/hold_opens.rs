@@ -1,8 +1,9 @@
 // Copyright (c) LightPool Labs
 //! Fill then hold ~N open paper positions across many accounts.
 //! Optional take-profit: subscribe indexer oracle mark and close when ROE ≥ threshold.
-//! Also subscribe `paper.positions` so liquidated/closed rows are dropped from the
-//! local book (no take-profit close retry after keeper liqd).
+//! `paper.positions` keeps the local open count (opened +1, closed/liquidated −1).
+//! Indexer `open_positions()` replaces that count every `--reconcile-mins` (default 10).
+//! One task signs at `--rate`; a pool of `--senders` tasks submits and waits for receipts.
 //!
 //! Standalone CLI — not wired into `scripts/dev.sh`.
 //!
@@ -19,7 +20,7 @@
 //!   --take-profit-pct 50
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -41,7 +42,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::time::{interval, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -100,7 +101,7 @@ struct Args {
     band: u32,
 
     /// Open sends per second (Fill + Hold top-up).
-    #[arg(long, default_value_t = 100.0)]
+    #[arg(long, default_value_t = 20.0)]
     rate: f64,
 
     /// Min whole USDC margin per open (human units); each open draws uniformly in [min, max].
@@ -131,9 +132,13 @@ struct Args {
     #[arg(long, default_value_t = 2000)]
     hold_poll_ms: u64,
 
-    /// How often to refresh open_positions during Fill (opens between polls).
-    #[arg(long, default_value_t = 50)]
-    refresh_every: u32,
+    /// Replace the local open count with indexer `open_positions` every N minutes.
+    #[arg(long, default_value_t = 10)]
+    reconcile_mins: u64,
+
+    /// Parallel submit tasks waiting on receipts. Signing stays one task at `--rate`.
+    #[arg(long, default_value_t = 8)]
+    senders: u32,
 
     /// Close when unrealized ROE (raw pnl / margin) ≥ this percent. 0 = disabled.
     /// Example: 50 → close when position is up ~50% of margin.
@@ -349,6 +354,79 @@ struct TrackedOpen {
     notional: u64,
     entry_price: u64,
     closing: bool,
+}
+
+/// Local open-count. `live` follows `paper.positions`. `inflight` covers opens
+/// signed but not yet reflected by that stream (or already reflected, matched by id).
+struct CountState {
+    live: u32,
+    inflight: u32,
+    /// Receipt succeeded; the matching `opened` event has not been applied.
+    waiting_ws: HashSet<u64>,
+    /// Recent `opened` ids so a receipt that lands after the event does not stick in inflight.
+    ws_seen: HashMap<u64, Instant>,
+}
+
+const WS_SEEN_TTL: Duration = Duration::from_secs(180);
+
+impl CountState {
+    fn seed(live: u32) -> Self {
+        Self {
+            live,
+            inflight: 0,
+            waiting_ws: HashSet::new(),
+            ws_seen: HashMap::new(),
+        }
+    }
+
+    fn effective(&self) -> u32 {
+        self.live.saturating_add(self.inflight)
+    }
+
+    fn prune_ws_seen(&mut self) {
+        let cutoff = Instant::now() - WS_SEEN_TTL;
+        self.ws_seen.retain(|_, seen_at| *seen_at >= cutoff);
+    }
+
+    fn on_submit_open(&mut self) {
+        self.inflight = self.inflight.saturating_add(1);
+    }
+
+    fn on_open_fail(&mut self) {
+        self.inflight = self.inflight.saturating_sub(1);
+    }
+
+    fn on_open_receipt(&mut self, position: u64) {
+        self.prune_ws_seen();
+        if self.ws_seen.remove(&position).is_some() {
+            self.inflight = self.inflight.saturating_sub(1);
+        } else {
+            self.waiting_ws.insert(position);
+        }
+    }
+
+    fn on_ws_opened(&mut self, position: u64) {
+        self.live = self.live.saturating_add(1);
+        if self.waiting_ws.remove(&position) {
+            self.inflight = self.inflight.saturating_sub(1);
+        } else {
+            self.prune_ws_seen();
+            self.ws_seen.insert(position, Instant::now());
+        }
+    }
+
+    fn on_ws_closed(&mut self, position: u64) {
+        self.live = self.live.saturating_sub(1);
+        self.waiting_ws.remove(&position);
+        self.ws_seen.remove(&position);
+    }
+
+    fn reconcile(&mut self, http_open: u32) {
+        self.live = http_open;
+        self.inflight = 0;
+        self.waiting_ws.clear();
+        self.ws_seen.clear();
+    }
 }
 
 fn urlencoding_encode(raw: &str) -> String {
@@ -669,16 +747,14 @@ async fn fund_workers(
     Ok(())
 }
 
-async fn submit_open(
-    client: &IndexerHttp,
+fn sign_open(
     signer: &Signer,
     paper_market: &str,
     instrument: u32,
     is_long: bool,
     margin_raw: u64,
     leverage: u64,
-    account_idx: usize,
-) -> Result<Option<TrackedOpen>> {
+) -> Result<SignedTransaction> {
     let paper =
         parse_token_contract(paper_market).map_err(|e| anyhow::anyhow!("paper market: {e}"))?;
     let owner = signer.address();
@@ -693,57 +769,136 @@ async fn submit_open(
         },
     )
     .context("build open")?;
-    let tx = TransactionBuilder::new()
+    TransactionBuilder::new()
         .sender(owner)
         .account(owner)
         .expiration(u64::MAX)
         .add_action(action)
         .build_and_sign_only(signer)
-        .context("sign open")?;
-    let response = client.submit(tx).await?;
-    if !response.receipt.is_success() {
-        bail!("open_paper failed: {:?}", response.receipt.status);
-    }
-    let Some(ev) = extract_paper_opened(&response.receipt) else {
-        return Ok(None);
-    };
-    Ok(Some(TrackedOpen {
-        account_idx,
-        position: ev.position,
-        is_long: ev.is_long,
-        margin: ev.margin,
-        notional: ev.notional,
-        entry_price: ev.entry_price,
-        closing: false,
-    }))
+        .context("sign open")
 }
 
-async fn submit_close(
-    client: &IndexerHttp,
-    signer: &Signer,
-    paper_market: &str,
-    position: u64,
-) -> Result<()> {
+fn sign_close(signer: &Signer, paper_market: &str, position: u64) -> Result<SignedTransaction> {
     let paper =
         parse_token_contract(paper_market).map_err(|e| anyhow::anyhow!("paper market: {e}"))?;
     let owner = signer.address();
     let action = ActionBuilder::close_paper(paper, PaperCloseParams { position })
         .context("build close")?;
-    let tx = TransactionBuilder::new()
+    TransactionBuilder::new()
         .sender(owner)
         .account(owner)
         .expiration(u64::MAX)
         .add_action(action)
         .build_and_sign_only(signer)
-        .context("sign close")?;
-    let response = client.submit(tx).await?;
-    if !response.receipt.is_success() {
-        bail!(
-            "close_paper pos={position} failed: {:?}",
-            response.receipt.status
-        );
-    }
-    Ok(())
+        .context("sign close")
+}
+
+struct CloseReq {
+    account_idx: usize,
+    position: u64,
+    roe: f64,
+}
+
+struct SendPool {
+    client: IndexerHttp,
+    permits: Arc<Semaphore>,
+}
+
+fn spawn_open_submit(
+    pool: &SendPool,
+    tx: SignedTransaction,
+    draw: OpenDraw,
+    book: Arc<Mutex<HashMap<u64, TrackedOpen>>>,
+    counts: Arc<Mutex<CountState>>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
+    let client = pool.client.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        match client.submit(tx).await {
+            Ok(response) if response.receipt.is_success() => {
+                let Some(ev) = extract_paper_opened(&response.receipt) else {
+                    counts.lock().await.on_open_fail();
+                    tracing::warn!("open ok but missing paper_opened event");
+                    return;
+                };
+                counts.lock().await.on_open_receipt(ev.position);
+                book.lock().await.insert(
+                    ev.position,
+                    TrackedOpen {
+                        account_idx: draw.account_idx,
+                        position: ev.position,
+                        is_long: ev.is_long,
+                        margin: ev.margin,
+                        notional: ev.notional,
+                        entry_price: ev.entry_price,
+                        closing: false,
+                    },
+                );
+            }
+            Ok(response) => {
+                counts.lock().await.on_open_fail();
+                tracing::warn!(status = ?response.receipt.status, "open receipt failed");
+            }
+            Err(err) => {
+                counts.lock().await.on_open_fail();
+                tracing::warn!(error = %err, "open submit failed");
+            }
+        }
+    });
+}
+
+fn spawn_close_submit(
+    pool: &SendPool,
+    tx: SignedTransaction,
+    req: CloseReq,
+    book: Arc<Mutex<HashMap<u64, TrackedOpen>>>,
+    mark: u64,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
+    let client = pool.client.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        match client.submit(tx).await {
+            Ok(response) if response.receipt.is_success() => {
+                book.lock().await.remove(&req.position);
+                tracing::info!(
+                    position = req.position,
+                    account_idx = req.account_idx,
+                    roe = format!("{:.2}", req.roe),
+                    mark,
+                    "take-profit close ok"
+                );
+            }
+            other => {
+                let err_s = match &other {
+                    Ok(response) => format!("receipt {:?}", response.receipt.status),
+                    Err(err) => err.to_string(),
+                };
+                let gone = err_s.contains("not found")
+                    || err_s.contains("Not found")
+                    || err_s.contains("not liquidatable")
+                    || err_s.contains("already");
+                if gone {
+                    book.lock().await.remove(&req.position);
+                    tracing::info!(
+                        position = req.position,
+                        account_idx = req.account_idx,
+                        error = %err_s,
+                        "drop from book after close miss (likely already liqd/closed)"
+                    );
+                } else if let Some(pos) = book.lock().await.get_mut(&req.position) {
+                    pos.closing = false;
+                    tracing::warn!(
+                        position = req.position,
+                        account_idx = req.account_idx,
+                        error = %err_s,
+                        "take-profit close failed"
+                    );
+                }
+            }
+        }
+    });
 }
 
 struct RateLimiter {
@@ -875,9 +1030,10 @@ fn spawn_oracle_ws(ws_url: String, spot_market: String, mark_raw: Arc<AtomicU64>
     });
 }
 
-fn lifecycle_event(msg: &Value) -> Option<&str> {
+fn position_event(msg: &Value) -> Option<&'static str> {
     let ev = msg.get("event")?.as_str()?;
     match ev.to_ascii_lowercase().as_str() {
+        "opened" | "open" => Some("opened"),
         "liquidated" | "liqd" | "liquidation" => Some("liquidated"),
         "closed" | "close" => Some("closed"),
         _ => None,
@@ -890,11 +1046,12 @@ fn position_id_from_ws(msg: &Value) -> Option<u64> {
         .or_else(|| msg.get("position").and_then(|v| v.as_str()?.parse().ok()))
 }
 
-/// Drop tracked rows when indexer reports liquidated/closed so take-profit won't retry.
+/// Count every open/close/liquidation on this market. Drop tracked rows on close/liqd.
 fn spawn_positions_ws(
     ws_url: String,
     paper_market: String,
     book: Arc<Mutex<HashMap<u64, TrackedOpen>>>,
+    counts: Arc<Mutex<CountState>>,
 ) {
     tokio::spawn(async move {
         let market_key = paper_market.trim().to_ascii_lowercase();
@@ -915,7 +1072,7 @@ fn spawn_positions_ws(
                     {
                         continue;
                     }
-                    tracing::info!(%ws_url, "paper.positions ws subscribed (liqd/close book sync)");
+                    tracing::info!(%ws_url, "paper.positions ws subscribed");
                     while let Some(msg) = read.next().await {
                         let Ok(msg) = msg else { break };
                         match msg {
@@ -923,7 +1080,7 @@ fn spawn_positions_ws(
                                 let Ok(value) = serde_json::from_str::<Value>(&text) else {
                                     continue;
                                 };
-                                let Some(kind) = lifecycle_event(&value) else {
+                                let Some(kind) = position_event(&value) else {
                                     continue;
                                 };
                                 let m = value
@@ -938,6 +1095,11 @@ fn spawn_positions_ws(
                                 let Some(position) = position_id_from_ws(&value) else {
                                     continue;
                                 };
+                                if kind == "opened" {
+                                    counts.lock().await.on_ws_opened(position);
+                                    continue;
+                                }
+                                counts.lock().await.on_ws_closed(position);
                                 let removed = book.lock().await.remove(&position).is_some();
                                 if removed {
                                     tracing::info!(
@@ -968,13 +1130,12 @@ fn spawn_positions_ws(
 
 fn spawn_take_profit_loop(
     client: Arc<IndexerHttp>,
-    workers: Arc<Vec<Signer>>,
-    paper_market: String,
     spot_market: String,
     book: Arc<Mutex<HashMap<u64, TrackedOpen>>>,
     mark_raw: Arc<AtomicU64>,
     take_profit_pct: f64,
     batch: u32,
+    close_tx: mpsc::Sender<CloseReq>,
     running: Arc<AtomicBool>,
 ) {
     tokio::spawn(async move {
@@ -1020,48 +1181,263 @@ fn spawn_take_profit_loop(
             }
 
             for (account_idx, position, roe) in to_close {
-                let Some(signer) = workers.get(account_idx) else {
-                    continue;
-                };
-                match submit_close(&client, signer, &paper_market, position).await {
-                    Ok(()) => {
-                        book.lock().await.remove(&position);
-                        tracing::info!(
-                            position,
-                            account_idx,
-                            roe = format!("{roe:.2}"),
-                            mark,
-                            "take-profit close ok"
-                        );
-                    }
-                    Err(err) => {
-                        let err_s = err.to_string();
-                        let gone = err_s.contains("not found")
-                            || err_s.contains("Not found")
-                            || err_s.contains("not liquidatable")
-                            || err_s.contains("already");
-                        if gone {
-                            book.lock().await.remove(&position);
-                            tracing::info!(
-                                position,
-                                account_idx,
-                                error = %err_s,
-                                "drop from book after close miss (likely already liqd/closed)"
-                            );
-                        } else if let Some(pos) = book.lock().await.get_mut(&position) {
-                            pos.closing = false;
-                            tracing::warn!(
-                                position,
-                                account_idx,
-                                error = %err_s,
-                                "take-profit close failed"
-                            );
-                        }
+                if close_tx
+                    .try_send(CloseReq {
+                        account_idx,
+                        position,
+                        roe,
+                    })
+                    .is_err()
+                {
+                    if let Some(pos) = book.lock().await.get_mut(&position) {
+                        pos.closing = false;
                     }
                 }
             }
         }
     });
+}
+
+fn spawn_reconcile(
+    client: Arc<IndexerHttp>,
+    paper_market: String,
+    counts: Arc<Mutex<CountState>>,
+    every: Duration,
+) {
+    tokio::spawn(async move {
+        let mut tick = interval(every);
+        tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match client.open_positions(&paper_market).await {
+                Ok(open) => {
+                    let mut guard = counts.lock().await;
+                    let before = guard.live;
+                    let inflight = guard.inflight;
+                    guard.reconcile(open);
+                    tracing::info!(before, inflight, open, "reconcile open_positions");
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "reconcile open_positions failed");
+                }
+            }
+        }
+    });
+}
+
+fn sync_open_phase(
+    phase_fill: &mut bool,
+    topping: &mut bool,
+    live: u32,
+    args: &Args,
+    floor: u32,
+    fill_start: Instant,
+    mark: u64,
+) {
+    if *topping && live >= args.target {
+        *topping = false;
+        if *phase_fill {
+            *phase_fill = false;
+            tracing::info!(
+                open = live,
+                elapsed_s = fill_start.elapsed().as_secs(),
+                "fill done"
+            );
+            tracing::info!(
+                poll_ms = args.hold_poll_ms,
+                band = args.band,
+                "phase=HOLD (Ctrl-C to stop)"
+            );
+        } else {
+            tracing::info!(open = live, "top-up done");
+        }
+    } else if !*phase_fill && !*topping && live < floor {
+        *topping = true;
+        tracing::info!(open = live, floor, target = args.target, "top-up");
+    } else if !*phase_fill && !*topping {
+        tracing::debug!(open = live, floor, mark, "hold ok");
+    }
+}
+
+async fn run_sign_loop(
+    client: Arc<IndexerHttp>,
+    workers: Arc<Vec<Signer>>,
+    paper_market: String,
+    args: &Args,
+    book: Arc<Mutex<HashMap<u64, TrackedOpen>>>,
+    counts: Arc<Mutex<CountState>>,
+    mark_raw: Arc<AtomicU64>,
+    mut close_rx: mpsc::Receiver<CloseReq>,
+    mut rng: StdRng,
+    soak_start: Instant,
+) {
+    let senders = args.senders.clamp(1, 64) as usize;
+    let pool = SendPool {
+        client: (*client).clone(),
+        permits: Arc::new(Semaphore::new(senders)),
+    };
+    let mut rate = RateLimiter::new(args.rate);
+    let floor = args.target.saturating_sub(args.band);
+    let idle = Duration::from_millis(args.hold_poll_ms.max(200));
+    let mut phase_fill = counts.lock().await.live < args.target;
+    let mut topping = phase_fill;
+    let fill_start = Instant::now();
+    let mut signed = 0u32;
+    if phase_fill {
+        tracing::info!("phase=FILL");
+    } else {
+        tracing::info!(
+            open = counts.lock().await.live,
+            "already at/above target; skip FILL"
+        );
+        tracing::info!(
+            poll_ms = args.hold_poll_ms,
+            band = args.band,
+            "phase=HOLD (Ctrl-C to stop)"
+        );
+    }
+
+    loop {
+        let queued_close = match close_rx.try_recv() {
+            Ok(req) => Some(req),
+            Err(_) => {
+                let need_open = {
+                    let guard = counts.lock().await;
+                    topping && guard.effective() < args.target
+                };
+                if need_open {
+                    None
+                } else {
+                    tokio::select! {
+                        req = close_rx.recv() => {
+                            if let Some(req) = req {
+                                Some(req)
+                            } else {
+                                tokio::time::sleep(idle).await;
+                                let live = counts.lock().await.live;
+                                sync_open_phase(
+                                    &mut phase_fill,
+                                    &mut topping,
+                                    live,
+                                    args,
+                                    floor,
+                                    fill_start,
+                                    mark_raw.load(Ordering::Relaxed),
+                                );
+                                continue;
+                            }
+                        }
+                        _ = tokio::time::sleep(idle) => {
+                            let live = counts.lock().await.live;
+                            sync_open_phase(
+                                &mut phase_fill,
+                                &mut topping,
+                                live,
+                                args,
+                                floor,
+                                fill_start,
+                                mark_raw.load(Ordering::Relaxed),
+                            );
+                            continue;
+                        }
+                    }
+                }
+            }
+        };
+
+        rate.wait().await;
+
+        if let Some(req) = queued_close {
+            let Some(signer) = workers.get(req.account_idx) else {
+                if let Some(pos) = book.lock().await.get_mut(&req.position) {
+                    pos.closing = false;
+                }
+                continue;
+            };
+            let tx = match sign_close(signer, &paper_market, req.position) {
+                Ok(tx) => tx,
+                Err(err) => {
+                    if let Some(pos) = book.lock().await.get_mut(&req.position) {
+                        pos.closing = false;
+                    }
+                    tracing::warn!(position = req.position, error = %err, "sign close failed");
+                    continue;
+                }
+            };
+            let Ok(permit) = pool.permits.clone().acquire_owned().await else {
+                if let Some(pos) = book.lock().await.get_mut(&req.position) {
+                    pos.closing = false;
+                }
+                continue;
+            };
+            let mark = mark_raw.load(Ordering::Relaxed);
+            spawn_close_submit(&pool, tx, req, Arc::clone(&book), mark, permit);
+            continue;
+        }
+
+        let draw = match draw_open(&mut rng, args, workers.len(), soak_start) {
+            Ok(draw) => draw,
+            Err(err) => {
+                tracing::warn!(error = %err, "draw open failed");
+                continue;
+            }
+        };
+        let signer = &workers[draw.account_idx];
+        counts.lock().await.on_submit_open();
+        let tx = match sign_open(
+            signer,
+            &paper_market,
+            args.instrument,
+            draw.is_long,
+            draw.margin_raw,
+            draw.leverage,
+        ) {
+            Ok(tx) => tx,
+            Err(err) => {
+                counts.lock().await.on_open_fail();
+                tracing::warn!(error = %err, "sign open failed");
+                continue;
+            }
+        };
+        let Ok(permit) = pool.permits.clone().acquire_owned().await else {
+            counts.lock().await.on_open_fail();
+            continue;
+        };
+        spawn_open_submit(
+            &pool,
+            tx,
+            draw,
+            Arc::clone(&book),
+            Arc::clone(&counts),
+            permit,
+        );
+        signed += 1;
+        if signed % 50 == 0 {
+            let guard = counts.lock().await;
+            let tracked = book.lock().await.len();
+            tracing::info!(
+                open = guard.live,
+                inflight = guard.inflight,
+                tracked,
+                target = args.target,
+                elapsed_s = fill_start.elapsed().as_secs(),
+                p_long = format!("{:.2}", long_prob_at(args, soak_start)),
+                "open progress"
+            );
+        }
+
+        let live = counts.lock().await.live;
+        sync_open_phase(
+            &mut phase_fill,
+            &mut topping,
+            live,
+            args,
+            floor,
+            fill_start,
+            mark_raw.load(Ordering::Relaxed),
+        );
+    }
 }
 
 #[tokio::main]
@@ -1104,6 +1480,12 @@ async fn main() -> Result<()> {
     if !(args.side_amplitude.is_finite() && (0.0..=0.5).contains(&args.side_amplitude)) {
         bail!("--side-amplitude must be in [0, 0.5]");
     }
+    if args.reconcile_mins == 0 {
+        bail!("--reconcile-mins must be >= 1");
+    }
+    if args.senders == 0 {
+        bail!("--senders must be >= 1");
+    }
 
     let markets_path = resolve_path(&args.markets_path);
     let markets: MarketsFile = serde_json::from_str(
@@ -1124,7 +1506,7 @@ async fn main() -> Result<()> {
         workers_vec.push(worker_signer(i)?);
     }
     let workers = Arc::new(workers_vec);
-    let mut rng = StdRng::from_entropy();
+    let rng = StdRng::from_entropy();
     let book: Arc<Mutex<HashMap<u64, TrackedOpen>>> = Arc::new(Mutex::new(HashMap::new()));
     let mark_raw = Arc::new(AtomicU64::new(0));
     let running = Arc::new(AtomicBool::new(true));
@@ -1146,6 +1528,8 @@ async fn main() -> Result<()> {
         take_profit_pct = args.take_profit_pct,
         side_period_secs = args.side_period_secs,
         side_amplitude = args.side_amplitude,
+        senders = args.senders.clamp(1, 64),
+        reconcile_mins = args.reconcile_mins,
         "hold-opens starting"
     );
 
@@ -1187,28 +1571,39 @@ async fn main() -> Result<()> {
         .context("fund workers")?;
     }
 
-    // Always sync book from indexer lifecycle so keeper liqd cannot be closed again.
+    let open = client.open_positions(&paper_market).await?;
+    let counts = Arc::new(Mutex::new(CountState::seed(open)));
+    tracing::info!(open, target = args.target, "seeded open count from indexer");
+
     spawn_positions_ws(
         client.ws_url(),
         paper_market.clone(),
         Arc::clone(&book),
+        Arc::clone(&counts),
+    );
+    spawn_reconcile(
+        Arc::clone(&client),
+        paper_market.clone(),
+        Arc::clone(&counts),
+        Duration::from_secs(args.reconcile_mins.saturating_mul(60)),
     );
 
+    if let Ok(raw) = client.oracle_mark_raw(&spot_market).await {
+        mark_raw.store(raw, Ordering::Relaxed);
+        tracing::info!(mark_raw = raw, %spot_market, "seeded oracle mark");
+    }
+    spawn_oracle_ws(client.ws_url(), spot_market.clone(), Arc::clone(&mark_raw));
+
+    let (close_tx, close_rx) = mpsc::channel::<CloseReq>(256);
     if args.take_profit_pct > 0.0 {
-        if let Ok(raw) = client.oracle_mark_raw(&spot_market).await {
-            mark_raw.store(raw, Ordering::Relaxed);
-            tracing::info!(mark_raw = raw, %spot_market, "seeded oracle mark");
-        }
-        spawn_oracle_ws(client.ws_url(), spot_market.clone(), Arc::clone(&mark_raw));
         spawn_take_profit_loop(
             Arc::clone(&client),
-            Arc::clone(&workers),
-            paper_market.clone(),
             spot_market.clone(),
             Arc::clone(&book),
             Arc::clone(&mark_raw),
             args.take_profit_pct,
             args.take_profit_batch.max(1),
+            close_tx.clone(),
             Arc::clone(&running),
         );
         tracing::info!(
@@ -1218,134 +1613,20 @@ async fn main() -> Result<()> {
     } else {
         tracing::info!("take-profit disabled (--take-profit-pct 0)");
     }
+    let _keep_close_tx = close_tx;
 
-    let mut rate = RateLimiter::new(args.rate);
-
-    let track_open = |book: &Arc<Mutex<HashMap<u64, TrackedOpen>>>, tracked: TrackedOpen| {
-        let book = Arc::clone(book);
-        async move {
-            book.lock().await.insert(tracked.position, tracked);
-        }
-    };
-
-    let mut open = client.open_positions(&paper_market).await?;
-    tracing::info!(open, target = args.target, "current open_positions");
-
-    if open < args.target {
-        tracing::info!("phase=FILL");
-        let fill_start = Instant::now();
-        let mut since_refresh = 0u32;
-        while open < args.target {
-            rate.wait().await;
-            let draw = match draw_open(&mut rng, &args, workers.len(), soak_start) {
-                Ok(d) => d,
-                Err(err) => {
-                    tracing::warn!(error = %err, "draw open failed");
-                    continue;
-                }
-            };
-            let signer = &workers[draw.account_idx];
-            match submit_open(
-                &client,
-                signer,
-                &paper_market,
-                args.instrument,
-                draw.is_long,
-                draw.margin_raw,
-                draw.leverage,
-                draw.account_idx,
-            )
-            .await
-            {
-                Ok(Some(tracked)) => track_open(&book, tracked).await,
-                Ok(None) => tracing::warn!("open ok but missing paper_opened event"),
-                Err(err) => tracing::warn!(error = %err, "open failed (continuing)"),
-            }
-            since_refresh += 1;
-            if since_refresh >= args.refresh_every {
-                open = client.open_positions(&paper_market).await.unwrap_or(open);
-                since_refresh = 0;
-                tracing::info!(
-                    open,
-                    tracked = book.lock().await.len(),
-                    target = args.target,
-                    elapsed_s = fill_start.elapsed().as_secs(),
-                    p_long = format!("{:.2}", long_prob_at(&args, soak_start)),
-                    "fill progress"
-                );
-            }
-        }
-        open = client.open_positions(&paper_market).await?;
-        tracing::info!(
-            open,
-            tracked = book.lock().await.len(),
-            elapsed_s = fill_start.elapsed().as_secs(),
-            "fill done"
-        );
-    } else {
-        tracing::info!(open, "already at/above target; skip FILL");
-    }
-
-    tracing::info!(
-        poll_ms = args.hold_poll_ms,
-        band = args.band,
-        "phase=HOLD (Ctrl-C to stop)"
-    );
-    let floor = args.target.saturating_sub(args.band);
-    loop {
-        tokio::time::sleep(Duration::from_millis(args.hold_poll_ms.max(200))).await;
-        open = match client.open_positions(&paper_market).await {
-            Ok(n) => n,
-            Err(err) => {
-                tracing::warn!(error = %err, "house poll failed");
-                continue;
-            }
-        };
-        if open >= floor {
-            tracing::debug!(
-                open,
-                floor,
-                tracked = book.lock().await.len(),
-                mark = mark_raw.load(Ordering::Relaxed),
-                "hold ok"
-            );
-            continue;
-        }
-        tracing::info!(open, floor, target = args.target, "top-up");
-        let mut since_refresh = 0u32;
-        while open < args.target {
-            rate.wait().await;
-            let draw = match draw_open(&mut rng, &args, workers.len(), soak_start) {
-                Ok(d) => d,
-                Err(err) => {
-                    tracing::warn!(error = %err, "draw open failed");
-                    continue;
-                }
-            };
-            let signer = &workers[draw.account_idx];
-            match submit_open(
-                &client,
-                signer,
-                &paper_market,
-                args.instrument,
-                draw.is_long,
-                draw.margin_raw,
-                draw.leverage,
-                draw.account_idx,
-            )
-            .await
-            {
-                Ok(Some(tracked)) => track_open(&book, tracked).await,
-                Ok(None) => {}
-                Err(err) => tracing::warn!(error = %err, "top-up open failed"),
-            }
-            since_refresh += 1;
-            if since_refresh >= args.refresh_every {
-                open = client.open_positions(&paper_market).await.unwrap_or(open);
-                since_refresh = 0;
-            }
-        }
-        open = client.open_positions(&paper_market).await.unwrap_or(open);
-        tracing::info!(open, "top-up done");
-    }
+    run_sign_loop(
+        client,
+        workers,
+        paper_market,
+        &args,
+        book,
+        counts,
+        mark_raw,
+        close_rx,
+        rng,
+        soak_start,
+    )
+    .await;
+    Ok(())
 }
