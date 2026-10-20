@@ -414,7 +414,7 @@ function TradeBody() {
   );
 
   return (
-    <div className="app-shell app-shell-with-activity">
+    <div className={`app-shell app-shell-with-activity${demoActive ? " demo-cards" : ""}`}>
       <div className="shell-top">
         <TopBar />
       </div>

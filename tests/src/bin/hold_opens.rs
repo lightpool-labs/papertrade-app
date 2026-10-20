@@ -2,6 +2,7 @@
 //! Fill then hold ~N open paper positions across many accounts.
 //! Optional take-profit: subscribe indexer oracle mark and close when ROE ≥ threshold.
 //! `paper.positions` keeps the local open count (opened +1, closed/liquidated −1).
+//! Liquidations stake minted paper for that worker immediately.
 //! Indexer `open_positions()` replaces that count every `--reconcile-mins` (default 10).
 //! One task signs at `--rate`; a pool of `--senders` tasks submits and waits for receipts.
 //!
@@ -33,7 +34,7 @@ use futures_util::{future::try_join_all, SinkExt, StreamExt};
 use lightpool_sdk::lightpool_types::SignedTransaction;
 use lightpool_sdk::{
     extract_paper_opened, parse_token_contract, ActionBuilder, PaperCloseParams,
-    PaperOpenParams, Signer, TransactionBuilder, TransferParams, TOKEN_SCALE,
+    PaperOpenParams, PaperStakeParams, Signer, TransactionBuilder, TransferParams, TOKEN_SCALE,
 };
 use std::process::Command;
 use rand::rngs::StdRng;
@@ -183,6 +184,8 @@ struct InstrumentFile {
 struct BootstrapFile {
     usdc: String,
     paper_market: String,
+    #[serde(default)]
+    paper_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -782,7 +785,7 @@ fn sign_close(signer: &Signer, paper_market: &str, position: u64) -> Result<Sign
     let paper =
         parse_token_contract(paper_market).map_err(|e| anyhow::anyhow!("paper market: {e}"))?;
     let owner = signer.address();
-    let action = ActionBuilder::close_paper(paper, PaperCloseParams { position })
+    let action = ActionBuilder::close_paper(paper, PaperCloseParams { positions: vec![position] })
         .context("build close")?;
     TransactionBuilder::new()
         .sender(owner)
@@ -793,10 +796,34 @@ fn sign_close(signer: &Signer, paper_market: &str, position: u64) -> Result<Sign
         .context("sign close")
 }
 
+static STAKE_TX_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn sign_stake(signer: &Signer, paper_market: &str, amount: u64) -> Result<SignedTransaction> {
+    let paper =
+        parse_token_contract(paper_market).map_err(|e| anyhow::anyhow!("paper market: {e}"))?;
+    let owner = signer.address();
+    let action = ActionBuilder::stake_paper(paper, PaperStakeParams { amount })
+        .context("build stake")?;
+    // Unique expiration so identical stake amounts do not share a digest.
+    let expiration = u64::MAX - STAKE_TX_SEQ.fetch_add(1, Ordering::Relaxed);
+    TransactionBuilder::new()
+        .sender(owner)
+        .account(owner)
+        .expiration(expiration)
+        .add_action(action)
+        .build_and_sign_only(signer)
+        .context("sign stake")
+}
+
 struct CloseReq {
     account_idx: usize,
     position: u64,
     roe: f64,
+}
+
+struct StakeReq {
+    account_idx: usize,
+    position: u64,
 }
 
 struct SendPool {
@@ -898,6 +925,49 @@ fn spawn_close_submit(
                 }
             }
         }
+    });
+}
+
+fn spawn_stake_submit(
+    pool: &SendPool,
+    tx: SignedTransaction,
+    req: StakeReq,
+    amount: u64,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    stake_pending: Arc<Mutex<HashSet<usize>>>,
+) {
+    let client = pool.client.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        match client.submit(tx).await {
+            Ok(response) if response.receipt.is_success() => {
+                tracing::info!(
+                    position = req.position,
+                    account_idx = req.account_idx,
+                    amount,
+                    "liqd stake ok"
+                );
+            }
+            Ok(response) => {
+                tracing::warn!(
+                    position = req.position,
+                    account_idx = req.account_idx,
+                    amount,
+                    status = ?response.receipt.status,
+                    "liqd stake receipt failed"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    position = req.position,
+                    account_idx = req.account_idx,
+                    amount,
+                    error = %err,
+                    "liqd stake submit failed"
+                );
+            }
+        }
+        stake_pending.lock().await.remove(&req.account_idx);
     });
 }
 
@@ -1047,11 +1117,15 @@ fn position_id_from_ws(msg: &Value) -> Option<u64> {
 }
 
 /// Count every open/close/liquidation on this market. Drop tracked rows on close/liqd.
+/// Queue one paper stake per worker account while a stake is already pending.
 fn spawn_positions_ws(
     ws_url: String,
     paper_market: String,
     book: Arc<Mutex<HashMap<u64, TrackedOpen>>>,
     counts: Arc<Mutex<CountState>>,
+    worker_by_addr: Arc<HashMap<String, usize>>,
+    stake_tx: mpsc::Sender<StakeReq>,
+    stake_pending: Arc<Mutex<HashSet<usize>>>,
 ) {
     tokio::spawn(async move {
         let market_key = paper_market.trim().to_ascii_lowercase();
@@ -1100,12 +1174,54 @@ fn spawn_positions_ws(
                                     continue;
                                 }
                                 counts.lock().await.on_ws_closed(position);
-                                let removed = book.lock().await.remove(&position).is_some();
-                                if removed {
+                                let tracked = book.lock().await.remove(&position);
+                                if tracked.is_some() {
                                     tracing::info!(
                                         position,
                                         event = kind,
                                         "removed from book (indexer lifecycle)"
+                                    );
+                                }
+                                if kind != "liquidated" {
+                                    continue;
+                                }
+                                let account_idx = tracked
+                                    .map(|t| t.account_idx)
+                                    .or_else(|| {
+                                        let owner = value
+                                            .get("user_address")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .trim()
+                                            .to_ascii_lowercase();
+                                        worker_by_addr.get(&owner).copied()
+                                    });
+                                let Some(account_idx) = account_idx else {
+                                    continue;
+                                };
+                                {
+                                    let mut pending = stake_pending.lock().await;
+                                    if !pending.insert(account_idx) {
+                                        tracing::debug!(
+                                            position,
+                                            account_idx,
+                                            "liqd stake coalesced (account already pending)"
+                                        );
+                                        continue;
+                                    }
+                                }
+                                if stake_tx
+                                    .try_send(StakeReq {
+                                        account_idx,
+                                        position,
+                                    })
+                                    .is_err()
+                                {
+                                    stake_pending.lock().await.remove(&account_idx);
+                                    tracing::warn!(
+                                        position,
+                                        account_idx,
+                                        "liqd stake queue full"
                                     );
                                 }
                             }
@@ -1260,15 +1376,24 @@ fn sync_open_phase(
     }
 }
 
+enum SignWork {
+    Stake(StakeReq),
+    Close(CloseReq),
+    Open,
+}
+
 async fn run_sign_loop(
     client: Arc<IndexerHttp>,
     workers: Arc<Vec<Signer>>,
     paper_market: String,
+    paper_token: String,
     args: &Args,
     book: Arc<Mutex<HashMap<u64, TrackedOpen>>>,
     counts: Arc<Mutex<CountState>>,
     mark_raw: Arc<AtomicU64>,
+    mut stake_rx: mpsc::Receiver<StakeReq>,
     mut close_rx: mpsc::Receiver<CloseReq>,
+    stake_pending: Arc<Mutex<HashSet<usize>>>,
     mut rng: StdRng,
     soak_start: Instant,
 ) {
@@ -1299,21 +1424,23 @@ async fn run_sign_loop(
     }
 
     loop {
-        let queued_close = match close_rx.try_recv() {
-            Ok(req) => Some(req),
-            Err(_) => {
-                let need_open = {
-                    let guard = counts.lock().await;
-                    topping && guard.effective() < args.target
-                };
-                if need_open {
-                    None
-                } else {
-                    tokio::select! {
-                        req = close_rx.recv() => {
-                            if let Some(req) = req {
-                                Some(req)
-                            } else {
+        let work = if let Ok(req) = stake_rx.try_recv() {
+            SignWork::Stake(req)
+        } else if let Ok(req) = close_rx.try_recv() {
+            SignWork::Close(req)
+        } else {
+            let need_open = {
+                let guard = counts.lock().await;
+                topping && guard.effective() < args.target
+            };
+            if need_open {
+                SignWork::Open
+            } else {
+                tokio::select! {
+                    req = stake_rx.recv() => {
+                        match req {
+                            Some(req) => SignWork::Stake(req),
+                            None => {
                                 tokio::time::sleep(idle).await;
                                 let live = counts.lock().await.live;
                                 sync_open_phase(
@@ -1328,52 +1455,157 @@ async fn run_sign_loop(
                                 continue;
                             }
                         }
-                        _ = tokio::time::sleep(idle) => {
-                            let live = counts.lock().await.live;
-                            sync_open_phase(
-                                &mut phase_fill,
-                                &mut topping,
-                                live,
-                                args,
-                                floor,
-                                fill_start,
-                                mark_raw.load(Ordering::Relaxed),
-                            );
-                            continue;
+                    }
+                    req = close_rx.recv() => {
+                        match req {
+                            Some(req) => SignWork::Close(req),
+                            None => {
+                                tokio::time::sleep(idle).await;
+                                let live = counts.lock().await.live;
+                                sync_open_phase(
+                                    &mut phase_fill,
+                                    &mut topping,
+                                    live,
+                                    args,
+                                    floor,
+                                    fill_start,
+                                    mark_raw.load(Ordering::Relaxed),
+                                );
+                                continue;
+                            }
                         }
+                    }
+                    _ = tokio::time::sleep(idle) => {
+                        let live = counts.lock().await.live;
+                        sync_open_phase(
+                            &mut phase_fill,
+                            &mut topping,
+                            live,
+                            args,
+                            floor,
+                            fill_start,
+                            mark_raw.load(Ordering::Relaxed),
+                        );
+                        continue;
                     }
                 }
             }
         };
 
-        rate.wait().await;
+        if matches!(work, SignWork::Open | SignWork::Close(_)) {
+            rate.wait().await;
+        }
 
-        if let Some(req) = queued_close {
-            let Some(signer) = workers.get(req.account_idx) else {
-                if let Some(pos) = book.lock().await.get_mut(&req.position) {
-                    pos.closing = false;
+        match work {
+            SignWork::Stake(req) => {
+                let clear_pending = |pending: &Arc<Mutex<HashSet<usize>>>, idx: usize| {
+                    let pending = Arc::clone(pending);
+                    async move {
+                        pending.lock().await.remove(&idx);
+                    }
+                };
+                let Some(signer) = workers.get(req.account_idx) else {
+                    clear_pending(&stake_pending, req.account_idx).await;
+                    continue;
+                };
+                if paper_token.is_empty() {
+                    tracing::warn!(
+                        position = req.position,
+                        "skip liqd stake: paper_token missing from bootstrap"
+                    );
+                    clear_pending(&stake_pending, req.account_idx).await;
+                    continue;
                 }
+                let owner = signer.address().to_string();
+                let mut amount = 0u64;
+                let mut last_err: Option<String> = None;
+                for attempt in 0..5u32 {
+                    match client.lp_available_raw(&owner, &paper_token).await {
+                        Ok(raw) if raw > 0 => {
+                            amount = raw;
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(err) => last_err = Some(err.to_string()),
+                    }
+                    if attempt + 1 < 5 {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+                if amount == 0 {
+                    if let Some(err) = last_err {
+                        tracing::warn!(
+                            position = req.position,
+                            account_idx = req.account_idx,
+                            error = %err,
+                            "liqd stake balance failed"
+                        );
+                    } else {
+                        tracing::debug!(
+                            position = req.position,
+                            account_idx = req.account_idx,
+                            "liqd stake skipped (no paper balance)"
+                        );
+                    }
+                    clear_pending(&stake_pending, req.account_idx).await;
+                    continue;
+                }
+                let tx = match sign_stake(signer, &paper_market, amount) {
+                    Ok(tx) => tx,
+                    Err(err) => {
+                        tracing::warn!(
+                            position = req.position,
+                            account_idx = req.account_idx,
+                            amount,
+                            error = %err,
+                            "sign stake failed"
+                        );
+                        clear_pending(&stake_pending, req.account_idx).await;
+                        continue;
+                    }
+                };
+                let Ok(permit) = pool.permits.clone().acquire_owned().await else {
+                    clear_pending(&stake_pending, req.account_idx).await;
+                    continue;
+                };
+                spawn_stake_submit(
+                    &pool,
+                    tx,
+                    req,
+                    amount,
+                    permit,
+                    Arc::clone(&stake_pending),
+                );
                 continue;
-            };
-            let tx = match sign_close(signer, &paper_market, req.position) {
-                Ok(tx) => tx,
-                Err(err) => {
+            }
+            SignWork::Close(req) => {
+                let Some(signer) = workers.get(req.account_idx) else {
                     if let Some(pos) = book.lock().await.get_mut(&req.position) {
                         pos.closing = false;
                     }
-                    tracing::warn!(position = req.position, error = %err, "sign close failed");
                     continue;
-                }
-            };
-            let Ok(permit) = pool.permits.clone().acquire_owned().await else {
-                if let Some(pos) = book.lock().await.get_mut(&req.position) {
-                    pos.closing = false;
-                }
+                };
+                let tx = match sign_close(signer, &paper_market, req.position) {
+                    Ok(tx) => tx,
+                    Err(err) => {
+                        if let Some(pos) = book.lock().await.get_mut(&req.position) {
+                            pos.closing = false;
+                        }
+                        tracing::warn!(position = req.position, error = %err, "sign close failed");
+                        continue;
+                    }
+                };
+                let Ok(permit) = pool.permits.clone().acquire_owned().await else {
+                    if let Some(pos) = book.lock().await.get_mut(&req.position) {
+                        pos.closing = false;
+                    }
+                    continue;
+                };
+                let mark = mark_raw.load(Ordering::Relaxed);
+                spawn_close_submit(&pool, tx, req, Arc::clone(&book), mark, permit);
                 continue;
-            };
-            let mark = mark_raw.load(Ordering::Relaxed);
-            spawn_close_submit(&pool, tx, req, Arc::clone(&book), mark, permit);
-            continue;
+            }
+            SignWork::Open => {}
         }
 
         let draw = match draw_open(&mut rng, args, workers.len(), soak_start) {
@@ -1506,15 +1738,29 @@ async fn main() -> Result<()> {
         workers_vec.push(worker_signer(i)?);
     }
     let workers = Arc::new(workers_vec);
+    let mut worker_by_addr = HashMap::with_capacity(workers.len());
+    for (idx, signer) in workers.iter().enumerate() {
+        worker_by_addr.insert(signer.address().to_string().to_ascii_lowercase(), idx);
+    }
+    let worker_by_addr = Arc::new(worker_by_addr);
     let rng = StdRng::from_entropy();
     let book: Arc<Mutex<HashMap<u64, TrackedOpen>>> = Arc::new(Mutex::new(HashMap::new()));
     let mark_raw = Arc::new(AtomicU64::new(0));
     let running = Arc::new(AtomicBool::new(true));
     let soak_start = Instant::now();
 
+    let bootstrap_path = resolve_path(&args.bootstrap_path);
+    let bootstrap: BootstrapFile = serde_json::from_str(
+        &std::fs::read_to_string(&bootstrap_path)
+            .with_context(|| format!("read bootstrap {}", bootstrap_path.display()))?,
+    )
+    .context("parse bootstrap.json")?;
+    let paper_token = bootstrap.paper_token.trim().to_string();
+
     tracing::info!(
         indexer = %args.indexer_url,
         paper_market = %paper_market,
+        paper_token = %paper_token,
         spot_market = %spot_market,
         accounts = args.accounts,
         target = args.target,
@@ -1534,12 +1780,6 @@ async fn main() -> Result<()> {
     );
 
     if args.fund_usdc > 0 {
-        let bootstrap_path = resolve_path(&args.bootstrap_path);
-        let bootstrap: BootstrapFile = serde_json::from_str(
-            &std::fs::read_to_string(&bootstrap_path)
-                .with_context(|| format!("read bootstrap {}", bootstrap_path.display()))?,
-        )
-        .context("parse bootstrap.json")?;
         let bridge_path = resolve_path(&args.bridge_state_path);
         let bridge: BridgeStateFile = serde_json::from_str(
             &std::fs::read_to_string(&bridge_path)
@@ -1575,11 +1815,16 @@ async fn main() -> Result<()> {
     let counts = Arc::new(Mutex::new(CountState::seed(open)));
     tracing::info!(open, target = args.target, "seeded open count from indexer");
 
+    let (stake_tx, stake_rx) = mpsc::channel::<StakeReq>(1024);
+    let stake_pending: Arc<Mutex<HashSet<usize>>> = Arc::new(Mutex::new(HashSet::new()));
     spawn_positions_ws(
         client.ws_url(),
         paper_market.clone(),
         Arc::clone(&book),
         Arc::clone(&counts),
+        Arc::clone(&worker_by_addr),
+        stake_tx,
+        Arc::clone(&stake_pending),
     );
     spawn_reconcile(
         Arc::clone(&client),
@@ -1619,11 +1864,14 @@ async fn main() -> Result<()> {
         client,
         workers,
         paper_market,
+        paper_token,
         &args,
         book,
         counts,
         mark_raw,
+        stake_rx,
         close_rx,
+        stake_pending,
         rng,
         soak_start,
     )

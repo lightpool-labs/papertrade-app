@@ -21,6 +21,8 @@ type Props = {
   demo?: boolean;
   /** Liquidation fireworks. Trade page only. */
   fireworks?: boolean;
+  /** Multiply boat px/s (House/Paper use 0.3 so open/close stay readable). */
+  speedScale?: number;
 };
 
 function normalizeKind(event: string | undefined): Kind | null {
@@ -135,19 +137,27 @@ function sideTone(ev: PaperPositionEvent): "up" | "down" | "flat" {
   return "flat";
 }
 
-function btcLogoEl(): HTMLSpanElement {
+function btcLogoEl(demo: boolean): HTMLSpanElement {
   const wrap = document.createElement("span");
   wrap.className = "house-activity-logo house-activity-logo-btc";
   wrap.setAttribute("aria-label", "BTC");
   wrap.title = "BTC";
+  if (demo) {
+    wrap.classList.add("house-activity-logo-btc-img");
+    const img = document.createElement("img");
+    img.src = "/btc-logo.png";
+    img.alt = "";
+    wrap.appendChild(img);
+    return wrap;
+  }
   wrap.textContent = "₿";
   return wrap;
 }
 
-function assetEl(ev: PaperPositionEvent): HTMLElement {
+function assetEl(ev: PaperPositionEvent, demo: boolean): HTMLElement {
   const name = assetName(ev);
   if (name === "BTC" || name.includes("BTC") || ev.instrument === 0) {
-    return btcLogoEl();
+    return btcLogoEl(demo);
   }
   const asset = document.createElement("strong");
   asset.className = "house-activity-asset";
@@ -155,7 +165,7 @@ function assetEl(ev: PaperPositionEvent): HTMLElement {
   return asset;
 }
 
-function makeChip(ev: PaperPositionEvent, kind: Kind, id: string): HTMLSpanElement {
+function makeChip(ev: PaperPositionEvent, kind: Kind, id: string, demo: boolean): HTMLSpanElement {
   const el = document.createElement("span");
   el.className = `house-activity-item ${kindClass(kind)}`;
   el.dataset.id = id;
@@ -166,7 +176,7 @@ function makeChip(ev: PaperPositionEvent, kind: Kind, id: string): HTMLSpanEleme
   el.dataset.pnl = pnlLabel(ev, kind);
   el.dataset.wallet = ev.user_address?.trim() || "—";
 
-  el.appendChild(assetEl(ev));
+  el.appendChild(assetEl(ev, demo));
 
   const notion = document.createElement("span");
   notion.className = "house-activity-size";
@@ -192,11 +202,18 @@ function makeChip(ev: PaperPositionEvent, kind: Kind, id: string): HTMLSpanEleme
 /**
  * Hover: pin a clone + tip; the banner stream keeps running underneath.
  */
-export function HouseActivityBanner({ market, demo = false, fireworks = false }: Props) {
+export function HouseActivityBanner({
+  market,
+  demo = false,
+  fireworks = false,
+  speedScale = 1,
+}: Props) {
   const marketKey = market?.trim().toLowerCase() ?? "";
   const hostRef = useRef<HTMLDivElement | null>(null);
   const fireworksRef = useRef(fireworks);
   fireworksRef.current = fireworks;
+  const speedScaleRef = useRef(speedScale);
+  speedScaleRef.current = speedScale;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -337,46 +354,40 @@ export function HouseActivityBanner({ market, demo = false, fireworks = false }:
       const gap = boatGap();
       const spacing = (boats[boats.length - 1]?.w ?? 148) + gap;
       const paced = eventsPerSecond() * spacing;
-      const liqdSpeed = Math.max(MIN_SPEED, viewWidth() * 0.8, paced);
-      const tradeSpeed = Math.max(viewWidth() * 0.12, paced);
-      if (fireworksRef.current && fireworksOn()) {
-        const span = priceCurveXSpan();
-        const hostBox = host.getBoundingClientRect();
-        const fireY = hostBox.top + hostBox.height / 2;
-        for (const boat of boats) {
-          const chip = boat.el;
-          const boatSpeed = chip.dataset.kind === "liquidated" ? liqdSpeed : tradeSpeed;
-          const dx = boatSpeed * dt;
-          boat.x -= dx;
-          placeBoat(boat);
-          if (chip.dataset.kind !== "liquidated" || chip.dataset.liqdFired) continue;
-          const cx = hostBox.left + boat.x + boat.w / 2;
-          const prevCx = cx + dx;
-          const loss = Number(chip.dataset.liqdLoss) || 0;
-          let fireX = cx;
-          if (span) {
-            const fromLeft = Math.min(1, Math.max(0, 1 - Math.log10(Math.max(loss, 1)) / 3.75));
-            const targetX = span.x0 + fromLeft * (span.x1 - span.x0);
-            const crossed = prevCx >= targetX && cx <= targetX;
-            if (!crossed && cx > targetX) continue;
-            fireX = targetX;
-          } else if (cx > window.innerWidth && prevCx > window.innerWidth) {
-            continue;
-          } else if (prevCx > window.innerWidth && cx < 0) {
-            fireX = window.innerWidth * 0.5;
-          } else if (cx > window.innerWidth) {
-            continue;
-          }
-          chip.dataset.liqdFired = "1";
-          launchLiqdAsh(fireX, fireY, loss, chip.dataset.id ?? "");
+      const scale = Math.max(0.01, speedScaleRef.current);
+      const liqdSpeed = Math.max(MIN_SPEED, viewWidth() * 0.8, paced) * scale;
+      const tradeSpeed = Math.max(viewWidth() * 0.12, paced) * scale;
+      const doFire = fireworksRef.current && fireworksOn();
+      const span = doFire ? priceCurveXSpan() : null;
+      const hostBox = doFire ? host.getBoundingClientRect() : null;
+      const fireY = hostBox ? hostBox.top + hostBox.height / 2 : 0;
+      for (const boat of boats) {
+        const chip = boat.el;
+        const boatSpeed = chip.dataset.kind === "liquidated" ? liqdSpeed : tradeSpeed;
+        const dx = boatSpeed * dt;
+        boat.x -= dx;
+        placeBoat(boat);
+        if (!doFire || !hostBox) continue;
+        if (chip.dataset.kind !== "liquidated" || chip.dataset.liqdFired) continue;
+        const cx = hostBox.left + boat.x + boat.w / 2;
+        const prevCx = cx + dx;
+        const loss = Number(chip.dataset.liqdLoss) || 0;
+        let fireX = cx;
+        if (span) {
+          const fromLeft = Math.min(1, Math.max(0, 1 - Math.log10(Math.max(loss, 1)) / 3.75));
+          const targetX = span.x0 + fromLeft * (span.x1 - span.x0);
+          const crossed = prevCx >= targetX && cx <= targetX;
+          if (!crossed && cx > targetX) continue;
+          fireX = targetX;
+        } else if (cx > window.innerWidth && prevCx > window.innerWidth) {
+          continue;
+        } else if (prevCx > window.innerWidth && cx < 0) {
+          fireX = window.innerWidth * 0.5;
+        } else if (cx > window.innerWidth) {
+          continue;
         }
-      } else {
-        for (const boat of boats) {
-          const boatSpeed =
-            boat.el.dataset.kind === "liquidated" ? liqdSpeed : tradeSpeed;
-          boat.x -= boatSpeed * dt;
-          placeBoat(boat);
-        }
+        chip.dataset.liqdFired = "1";
+        launchLiqdAsh(fireX, fireY, loss, chip.dataset.id ?? "");
       }
       for (let i = boats.length - 1; i >= 0; i--) {
         const gone = boats[i];
@@ -518,6 +529,7 @@ export function HouseActivityBanner({ market, demo = false, fireworks = false }:
         ev,
         kind,
         demoId ?? `${seq}-${ev.position ?? 0}-${kind}`,
+        demo,
       );
       if (seq % 20 === 0) {
         const colors = ["#e11d48", "#f59e0b", "#2563eb", "#16a34a", "#7c3aed", "#111827"];

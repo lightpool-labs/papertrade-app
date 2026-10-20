@@ -163,7 +163,8 @@ export function useDemoPlayer(
     for (const row of rows) {
       if (bustedRef.current.has(row.position)) continue;
       const bust = Number(row.bust_price);
-      if (!(px <= bust)) continue;
+      const hit = row.is_long ? px <= bust : px >= bust;
+      if (!hit) continue;
       bustedRef.current.add(row.position);
       if (!animate) continue;
       armed = true;

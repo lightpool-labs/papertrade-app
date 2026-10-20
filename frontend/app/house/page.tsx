@@ -683,7 +683,7 @@ function HouseBody() {
           </div>
         )}
       </main>
-      <HouseActivityBanner market={paperMarket} />
+      <HouseActivityBanner market={paperMarket} speedScale={0.3} />
     </div>
   );
 }

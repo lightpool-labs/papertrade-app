@@ -14,6 +14,9 @@ MAKER_ADDR="${MAKER_ADDR:-0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266}"
 # Anvil #1 — default local trader (MetaMask / FE)
 USER_KEY="${USER_KEY:-0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d}"
 USER_ADDR="${USER_ADDR:-0x70997970C51812dc3A010C7d01b50e0d17dc79C8}"
+# Anvil #2 — second local MetaMask wallet
+USER2_KEY="${USER2_KEY:-0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a}"
+USER2_ADDR="${USER2_ADDR:-0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC}"
 
 LP_RPC="${LP_RPC:-http://127.0.0.1:26300}"
 RETH_RPC="${RETH_RPC:-http://127.0.0.1:8545}"
@@ -21,6 +24,8 @@ CLOB_HTTP="${LIGHTPOOL_CLOB_INDEX_HTTP:-http://127.0.0.1:3002}"
 APP_API="${APP_API:-http://127.0.0.1:3001/api}"
 # Whole USDC minted on Reth (6 decimals on-chain).
 USER_RETH_USDC_WHOLE="${USER_RETH_USDC_WHOLE:-1000000}"
+# Anvil #2 LightPool USDC (admin bridge-deposit → LP transfer; not Reth mint).
+USER2_LP_USDC_WHOLE="${USER2_LP_USDC_WHOLE:-10000}"
 # Admin soak funding via hold_opens (accounts × fund-usdc); default covers large runs.
 ADMIN_RETH_USDC_WHOLE="${ADMIN_RETH_USDC_WHOLE:-100000000}"
 
@@ -168,7 +173,8 @@ Usage: $(basename "$0") [start|stop|clean|status|bootstrap]
 
 Env:
   LABS / DATA / LIGHTPOOL_BIN / INDEXER_BIN / ORACLE_BIN / RETH_BIN / BRIDGE_BIN
-  USER_RETH_USDC_WHOLE    Reth mint for demo user (default 1000000)
+  USER_RETH_USDC_WHOLE    Reth mint for demo user Anvil #1 (default 1000000)
+  USER2_LP_USDC_WHOLE     LightPool USDC for Anvil #2 via admin transfer (default 10000)
   ADMIN_RETH_USDC_WHOLE   Reth mint for admin / hold_opens (default 100000000)
   CARGO_WATCH=0          cargo run once instead of cargo-watch
   PAPER_KEEPER=0         skip paper-keeper
@@ -179,6 +185,7 @@ Start: Reth → node/indexer → deploy USDC+bridge → mint user+admin on Reth 
 init-bridge LP USDC → bridge daemon → paper-bootstrap → oracle/app/keeper.
 
 Demo: MetaMask Anvil #1, add Reth + USDC, Trade → Deposit.
+Anvil #2: admin bridge-deposit → LP transfer (USER2_LP_USDC_WHOLE, default 10000).
 hold_opens: admin bridge-deposit → LP transfer → paper deposit (no Reth mint).
 EOF
 }
@@ -623,10 +630,98 @@ start_bridge() {
 
 mint_reth_usdc_balances() {
   local usdc_evm="$1"
-  echo "=== mint USDC on Reth (demo user + admin) ==="
+  echo "=== mint USDC on Reth (demo user #1 + admin) ==="
   mint_erc20 "$usdc_evm" "$USER_ADDR" "$USER_RETH_USDC_WHOLE"
   mint_erc20 "$usdc_evm" "$MAKER_ADDR" "$ADMIN_RETH_USDC_WHOLE"
-  echo "ok    user=$USER_RETH_USDC_WHOLE admin=$ADMIN_RETH_USDC_WHOLE (whole USDC)"
+  echo "ok    user=#1:$USER_RETH_USDC_WHOLE admin=$ADMIN_RETH_USDC_WHOLE (whole USDC; #2 funded on LightPool)"
+}
+
+lp_available_raw() {
+  local addr="$1" token="$2"
+  python3 - "$CLOB_HTTP" "$addr" "$token" <<'PY'
+import json, sys, urllib.request
+base, addr, token = sys.argv[1:]
+url = f"{base.rstrip('/')}/api/accounts/{addr}/balances"
+body = json.dumps({"tokens": [{"symbol": "USDC", "address": token}]}).encode()
+req = urllib.request.Request(url, data=body, headers={"content-type": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        rows = json.load(resp)
+except Exception:
+    print("0")
+    raise SystemExit
+avail = "0"
+if isinstance(rows, list) and rows:
+    avail = str(rows[0].get("available") or "0")
+s = avail.strip()
+if not s:
+    print("0")
+    raise SystemExit
+if "." in s:
+    whole, frac = s.split(".", 1)
+else:
+    whole, frac = s, ""
+frac = (frac + "000000")[:6]
+print(int(whole or "0") * 1_000_000 + int(frac or "0"))
+PY
+}
+
+# Admin Reth USDC → LightPool via bridge, enough for `need_whole` USDC.
+ensure_admin_lp_usdc() {
+  local need_whole="$1"
+  local need_raw usdc_evm lp evm_bridge have deficit i now
+  need_raw="$(raw_amount "$need_whole")"
+  usdc_evm="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tokens"][0]["evm"])' "$BRIDGE_STATE")"
+  lp="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tokens"][0]["lp"])' "$BRIDGE_STATE")"
+  evm_bridge="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["evm_bridge"])' "$BRIDGE_STATE")"
+  have="$(lp_available_raw "$MAKER_ADDR" "$lp")"
+  if [[ "$have" -ge "$need_raw" ]]; then
+    echo "ok    admin already has LP USDC have=$have need=$need_raw"
+    return 0
+  fi
+  deficit=$((need_raw - have))
+  echo "admin LP USDC short have=$have need=$need_raw — bridge deposit $deficit"
+  cast send "$usdc_evm" "approve(address,uint256)" "$evm_bridge" "$deficit" \
+    --rpc-url "$RETH_RPC" --private-key "$MAKER_KEY" >/dev/null
+  cast send "$evm_bridge" "deposit(address,uint64,address)" \
+    "$usdc_evm" "$deficit" "$MAKER_ADDR" \
+    --rpc-url "$RETH_RPC" --private-key "$MAKER_KEY" >/dev/null
+  local target=$((have + deficit))
+  for i in $(seq 1 60); do
+    sleep 2
+    now="$(lp_available_raw "$MAKER_ADDR" "$lp")"
+    if [[ "$now" -ge "$target" ]]; then
+      echo "ok    admin LP USDC credited now=$now"
+      return 0
+    fi
+    if (( i % 5 == 0 )); then
+      echo "wait  admin LP USDC now=$now target=$target"
+    fi
+  done
+  echo "timed out waiting for admin LP USDC after bridge deposit (need $target)" >&2
+  exit 1
+}
+
+# Transfer LightPool USDC to Anvil #2 (admin already bridged).
+fund_user2_lp_usdc() {
+  local whole="${USER2_LP_USDC_WHOLE:-0}"
+  if [[ "$whole" -le 0 ]]; then
+    echo "skip  Anvil #2 LP fund (USER2_LP_USDC_WHOLE=0)"
+    return 0
+  fi
+  echo "=== fund Anvil #2 on LightPool (${whole} USDC) ==="
+  ensure_admin_lp_usdc "$whole"
+  need_cmd cargo
+  (
+    cd "$APP_ROOT/backend"
+    INDEXER_URL="$CLOB_HTTP" \
+    BOOTSTRAP_STATE="$BOOTSTRAP_STATE" \
+    MARKETS_PATH="$MARKETS_PATH" \
+    SKIP_PAPER_FUND=1 \
+    PAPER_FUND_USER2_USDC="$whole" \
+    PAPER_FUND_USER2_KEY="$USER2_KEY" \
+      cargo run --bin paper-bootstrap
+  )
 }
 
 setup_usdc_bridge() {
@@ -639,6 +734,8 @@ setup_usdc_bridge() {
     EVM_CHAIN_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["evm_chain_id"])' "$BRIDGE_STATE")"
     write_bridge_config_from_state
     need_cmd cast
+    fund_eth "$USER_ADDR" 10ether
+    fund_eth "$USER2_ADDR" 10ether
     mint_reth_usdc_balances "$USDC_EVM"
     return
   fi
@@ -652,8 +749,9 @@ setup_usdc_bridge() {
   need_cmd forge
   prepare_forge_home
   EVM_CHAIN_ID="$(cast chain-id --rpc-url "$RETH_RPC")"
-  echo "=== fund demo user on Reth (ETH gas) ==="
+  echo "=== fund demo users on Reth (ETH gas) ==="
   fund_eth "$USER_ADDR" 10ether
+  fund_eth "$USER2_ADDR" 10ether
   echo "=== deploy USDC + bridge on Reth ==="
   deploy_usdc_and_bridge
   mint_reth_usdc_balances "$USDC_EVM"
@@ -1093,6 +1191,9 @@ Accounts (import into MetaMask)
   Demo user / trader (Anvil #1)
     address  $USER_ADDR
     key      $USER_KEY
+  Second trader (Anvil #2, ${USER2_LP_USDC_WHOLE} USDC on LightPool)
+    address  $USER2_ADDR
+    key      $USER2_KEY
 
 Logs: $LOG_DIR
 Stop: $0 stop
@@ -1249,6 +1350,7 @@ start_all() {
   setup_usdc_bridge
   start_bridge
   run_bootstrap
+  fund_user2_lp_usdc
   start_oracle
   start_backend
   start_frontend

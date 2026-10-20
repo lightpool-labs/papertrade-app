@@ -20,6 +20,19 @@
   --shell-gap: 6px;
 }
 
+html[data-demo-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0e11;
+  --bg-panel: #161a1e;
+  --bg-elevated: #2b3139;
+  --border: #3c4450;
+  --text: #f5f5f5;
+  --text-muted: #a7b0bd;
+  --accent: #f5f5f5;
+  --hover: #323843;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -464,7 +477,7 @@ button {
   border-radius: 50%;
   border: none;
   background: var(--slider-fill);
-  box-shadow: 0 0 0 2px #ffffff;
+  box-shadow: 0 0 0 2px var(--bg-panel);
 }
 
 .field input[type="range"]::-moz-range-track {
@@ -485,7 +498,7 @@ button {
   border: none;
   border-radius: 50%;
   background: var(--slider-fill);
-  box-shadow: 0 0 0 2px #ffffff;
+  box-shadow: 0 0 0 2px var(--bg-panel);
 }
 
 .pct-row {
@@ -1704,14 +1717,33 @@ button {
 }
 
 .house-activity-logo-btc {
-  width: 20px;
-  height: 20px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
-  background: #c4c9d2;
+  background: #f7931a;
   color: #fff;
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 700;
   font-family: system-ui, -apple-system, sans-serif;
+}
+
+.house-activity-item:has(.house-activity-logo-btc-img) {
+  box-sizing: border-box;
+  height: 48px;
+}
+
+.house-activity-logo-btc-img {
+  width: 46px;
+  height: 46px;
+  background: transparent;
+}
+
+.house-activity-logo-btc-img img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: 50%;
 }
 
 .house-activity-asset {
@@ -1796,9 +1828,19 @@ button {
 }
 
 .house-activity-item.house-activity-frozen .house-activity-logo-btc {
-  width: 24px;
-  height: 24px;
-  font-size: 14px;
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+}
+
+.house-activity-item.house-activity-frozen:has(.house-activity-logo-btc-img) {
+  box-sizing: border-box;
+  height: 48px !important;
+}
+
+.house-activity-item.house-activity-frozen .house-activity-logo-btc-img {
+  width: 46px;
+  height: 46px;
 }
 
 .house-activity-item.house-activity-frozen .house-activity-size {
@@ -2396,18 +2438,42 @@ button {
 }
 
 .demo-panel-actions button,
-.demo-panel-actions a {
+.demo-panel-actions a,
+.demo-panel-themes button {
   padding: 4px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fff;
-  color: var(--accent);
+  background: var(--bg-panel);
+  color: var(--text);
   font-size: 12px;
   text-decoration: none;
   cursor: pointer;
 }
 
+.demo-panel-themes {
+  display: flex;
+  gap: 6px;
+}
+
+.demo-panel-themes button.is-on {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
 .demo-panel-actions button:hover,
-.demo-panel-actions a:hover {
+.demo-panel-actions a:hover,
+.demo-panel-themes button:hover {
   background: var(--bg-elevated);
+}
+
+.demo-panel-themes button.is-on:hover {
+  background: var(--accent);
+}
+
+.app-shell.demo-cards .chart-stack,
+.app-shell.demo-cards .chart-stack *,
+.app-shell.demo-cards .bottom-panel,
+.app-shell.demo-cards .bottom-panel * {
+  font-weight: 700;
 }

@@ -1,7 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { DemoPlayer } from "@/hooks/useDemoPlayer";
 import { demoUrl } from "@/lib/demo";
+
+type DemoTheme = "light" | "dark";
+const THEME_KEY = "paper-demo-theme";
 
 function fmtClock(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -12,11 +16,52 @@ function fmtClock(seconds: number): string {
 }
 
 export function DemoPanel({ player }: { player: DemoPlayer }) {
+  const [theme, setTheme] = useState<DemoTheme>("light");
+  const [themeReady, setThemeReady] = useState(false);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved === "dark" || saved === "light") setTheme(saved);
+    setThemeReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!themeReady) return;
+    document.documentElement.dataset.demoTheme = theme;
+    window.localStorage.setItem(THEME_KEY, theme);
+  }, [theme, themeReady]);
+
+  useEffect(() => {
+    return () => {
+      delete document.documentElement.dataset.demoTheme;
+    };
+  }, []);
+
+  const themeButtons = (
+    <div className="demo-panel-themes" role="group" aria-label="Theme">
+      <button
+        type="button"
+        className={theme === "light" ? "is-on" : ""}
+        onClick={() => setTheme("light")}
+      >
+        Light
+      </button>
+      <button
+        type="button"
+        className={theme === "dark" ? "is-on" : ""}
+        onClick={() => setTheme("dark")}
+      >
+        Dark
+      </button>
+    </div>
+  );
+
   if (player.status === "error") {
     return (
       <div className="demo-panel demo-panel-error">
         <span className="demo-panel-badge">DEMO</span>
         <span>{player.error ?? "demo failed"}</span>
+        {themeButtons}
       </div>
     );
   }
@@ -25,6 +70,7 @@ export function DemoPanel({ player }: { player: DemoPlayer }) {
       <div className="demo-panel">
         <span className="demo-panel-badge">DEMO</span>
         <span className="demo-panel-muted">Loading demo session…</span>
+        {themeButtons}
       </div>
     );
   }
@@ -68,6 +114,7 @@ export function DemoPanel({ player }: { player: DemoPlayer }) {
           timeline.json
         </a>
       </div>
+      {themeButtons}
     </div>
   );
 }

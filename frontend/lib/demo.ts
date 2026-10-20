@@ -119,10 +119,18 @@ const DEMO_AVAILABLE = 100_000;
 const DEMO_LONG_LEVERAGE = 10;
 
 /** Fractions vs the song anchor. Bust levels sit inside the climax dump. */
-const DEMO_LONGS: { position: number; margin: number; entryOff: number; bustOff: number }[] = [
-  { position: 1, margin: 500, entryOff: 0.002, bustOff: -0.08 },
-  { position: 2, margin: 2_000, entryOff: 0.004, bustOff: -0.16 },
-  { position: 3, margin: 8_000, entryOff: 0.006, bustOff: -0.24 },
+const DEMO_LONGS: {
+  position: number;
+  margin: number;
+  leverage: number;
+  isLong: boolean;
+  entryOff: number;
+  bustOff: number;
+}[] = [
+  { position: 1, margin: 500, leverage: DEMO_LONG_LEVERAGE, isLong: true, entryOff: 0.002, bustOff: -0.08 },
+  { position: 2, margin: 2_000, leverage: DEMO_LONG_LEVERAGE, isLong: true, entryOff: 0.004, bustOff: -0.16 },
+  { position: 3, margin: 8_000, leverage: 1000, isLong: true, entryOff: 0, bustOff: -0.001 },
+  { position: 4, margin: 10_000, leverage: 1000, isLong: false, entryOff: 0, bustOff: 0.00015 },
 ];
 
 export function buildDemoLongs(anchor: number, owner: string | null): PaperPositionOpen[] {
@@ -135,9 +143,9 @@ export function buildDemoLongs(anchor: number, owner: string | null): PaperPosit
       position: row.position,
       owner: who,
       instrument: 0,
-      is_long: true,
+      is_long: row.isLong,
       margin: row.margin.toFixed(2),
-      notional: (row.margin * DEMO_LONG_LEVERAGE).toFixed(2),
+      notional: (row.margin * row.leverage).toFixed(2),
       entry_price: entry.toFixed(1),
       bust_price: bust.toFixed(1),
       funded_from_queued: false,

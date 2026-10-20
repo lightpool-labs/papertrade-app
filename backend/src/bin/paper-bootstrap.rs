@@ -57,6 +57,9 @@ struct BootstrapState {
     /// Lowercase address last funded via `PAPER_FUND_KEY` (empty = never / legacy).
     #[serde(default)]
     paper_funded_for: String,
+    /// Lowercase Anvil #2 address last funded via `PAPER_FUND_USER2_*`.
+    #[serde(default)]
+    paper_funded_user2_for: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -161,6 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             lpl: None,
             paper_funded: false,
             paper_funded_for: String::new(),
+            paper_funded_user2_for: String::new(),
         };
         write_markets_file(&markets_path, &paper_market, &spot_btc)?;
         println!("wrote {}", markets_path.display());
@@ -208,6 +212,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
             state.paper_funded = true;
             state.paper_funded_for = fund_addr;
+        }
+    }
+
+    // Anvil #2: admin LP USDC transfer (dev.sh bridges admin first).
+    if let Some(fund_usdc) = env::var("PAPER_FUND_USER2_USDC")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+    {
+        let fund_key = env::var("PAPER_FUND_USER2_KEY").unwrap_or_else(|_| {
+            "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a".into()
+        });
+        let user2 = load_signer(&fund_key)?;
+        let fund_addr = user2.address().to_string();
+        let already = !state.paper_funded_user2_for.is_empty()
+            && state
+                .paper_funded_user2_for
+                .eq_ignore_ascii_case(fund_addr.trim());
+        if already {
+            println!("skip  Anvil #2 LP fund (already funded {fund_addr})");
+        } else {
+            println!("fund  Anvil #2 {fund_usdc} USDC on LightPool → {fund_addr}");
+            fund_paper_usdc(
+                &client,
+                &signer,
+                &user2,
+                &state.usdc,
+                &state.paper_market,
+                fund_usdc,
+            )
+            .await?;
+            state.paper_funded_user2_for = fund_addr;
         }
     }
 

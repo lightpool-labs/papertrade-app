@@ -615,7 +615,7 @@ function PaperBody() {
           </div>
         )}
       </main>
-      <HouseActivityBanner market={paperMarket} />
+      <HouseActivityBanner market={paperMarket} speedScale={0.3} />
     </div>
   );
 }

@@ -158,7 +158,7 @@ pub async fn prepare_close_paper(
     let action = ActionBuilder::close_paper(
         paper,
         PaperCloseParams {
-            position: req.position,
+            positions: vec![req.position],
         },
     )
     .map_err(|e| AppError::Internal(format!("build close_paper: {e}")))?;
