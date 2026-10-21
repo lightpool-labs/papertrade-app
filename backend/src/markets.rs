@@ -27,6 +27,8 @@ pub struct InstrumentRecord {
 pub struct MarketsFile {
     #[serde(default)]
     pub paper_market: String,
+    #[serde(default)]
+    pub amm_pool: String,
     #[serde(default = "default_quote_decimals")]
     pub quote_decimals: u32,
     #[serde(default = "default_liq_buffer_ppm")]

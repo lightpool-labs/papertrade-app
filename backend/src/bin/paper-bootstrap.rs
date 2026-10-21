@@ -16,11 +16,12 @@ use std::time::Duration;
 
 use compact_str::CompactString;
 use lightpool_sdk::{
-    extract_market_address_from_events, extract_paper_market_created,
+    extract_amm_pool_from_events, extract_market_address_from_events, extract_paper_market_created,
     extract_token_address_from_events, parse_token_contract, ActionBuilder, AllocateStakeParams,
-    BondLplParams, CreateMarketParams, CreateTokenParams, InitStakingConfigParams, MarketState,
-    PaperAddInstrumentParams, PaperCreateMarketParams, RegisterValidatorParams,
-    SegmentSize, Signer, StakePurpose, TransferParams, TOKEN_SCALE, TransactionBuilder,
+    AmmCreatePoolParams, BondLplParams, CreateMarketParams, CreateTokenParams,
+    InitStakingConfigParams, MarketState, PaperAddInstrumentParams, PaperCreateMarketParams,
+    PaperSetAmmParams, RegisterValidatorParams, SegmentSize, Signer, StakePurpose, TransferParams,
+    TOKEN_SCALE, TransactionBuilder,
 };
 use lightpool_sdk::lightpool_types::SignedTransaction;
 use lightpool_sdk::TransactionReceipt;
@@ -50,6 +51,8 @@ struct BootstrapState {
     paper_market: String,
     paper_token: String,
     #[serde(default)]
+    amm_pool: String,
+    #[serde(default)]
     lpl: Option<String>,
     /// True after paper USDC deposit for the local trade wallet.
     #[serde(default)]
@@ -65,6 +68,8 @@ struct BootstrapState {
 #[derive(Serialize, Deserialize)]
 struct MarketsFile {
     paper_market: String,
+    #[serde(default)]
+    amm_pool: String,
     quote_decimals: u32,
     liq_buffer_ppm: u64,
     instruments: Vec<InstrumentRecord>,
@@ -153,6 +158,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         add_btc_instrument(&client, &signer, paper, price_market).await?;
         println!("ok    BTC instrument id=0");
 
+        println!("create PAPER/USDC AMM pool");
+        let paper_token_addr = parse_token_contract(&paper_token)?;
+        let amm_pool =
+            create_paper_amm(&client, &signer, paper, paper_token_addr, usdc_addr).await?;
+        println!("ok    amm pool {amm_pool}");
+
         let state = BootstrapState {
             usdc,
             btc,
@@ -161,15 +172,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             spot_eth,
             paper_market: paper_market.clone(),
             paper_token,
+            amm_pool: amm_pool.clone(),
             lpl: None,
             paper_funded: false,
             paper_funded_for: String::new(),
             paper_funded_user2_for: String::new(),
         };
-        write_markets_file(&markets_path, &paper_market, &spot_btc)?;
+        write_markets_file(&markets_path, &paper_market, &amm_pool, &spot_btc)?;
         println!("wrote {}", markets_path.display());
         state
     };
+
+    if state.amm_pool.trim().is_empty() {
+        println!("create PAPER/USDC AMM pool (resume)");
+        let paper = parse_token_contract(&state.paper_market)?;
+        let paper_token_addr = parse_token_contract(&state.paper_token)?;
+        let usdc_addr = parse_token_contract(&state.usdc)?;
+        let amm_pool =
+            create_paper_amm(&client, &signer, paper, paper_token_addr, usdc_addr).await?;
+        println!("ok    amm pool {amm_pool}");
+        state.amm_pool = amm_pool;
+        write_markets_file(
+            &markets_path,
+            &state.paper_market,
+            &state.amm_pool,
+            &state.spot_btc,
+        )?;
+    }
 
     // LPL + stake so epoch epilogue can fill RunningCommittee after ~1000 blocks.
     // Until then ora_commit runs in open-mode (no committee).
@@ -260,7 +289,12 @@ fn sync_markets_from_state(
     markets_path: &PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state: BootstrapState = serde_json::from_str(&fs::read_to_string(state_path)?)?;
-    write_markets_file(markets_path, &state.paper_market, &state.spot_btc)?;
+    write_markets_file(
+        markets_path,
+        &state.paper_market,
+        &state.amm_pool,
+        &state.spot_btc,
+    )?;
     println!("synced {}", markets_path.display());
     Ok(())
 }
@@ -268,10 +302,12 @@ fn sync_markets_from_state(
 fn write_markets_file(
     path: &PathBuf,
     paper_market: &str,
+    amm_pool: &str,
     spot_btc: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let file = MarketsFile {
         paper_market: paper_market.to_string(),
+        amm_pool: amm_pool.to_string(),
         quote_decimals: 6,
         liq_buffer_ppm: 500,
         instruments: vec![
@@ -428,13 +464,13 @@ async fn create_paper_market(
         paper_name: CompactString::new("Paper"),
         paper_symbol: CompactString::new("PAPER"),
         win_fee_ppm: 20_000,
-        loss_fee_ppm: 20_000,
+        loss_fee_ppm: 0,
         staker_share_ppm: 500_000,
         deadband_ppm: 20,
         liq_buffer_ppm: 500,
         flat_threshold: 2_000_000_000_000,
         flat_rate_ppm: 100_000_000,
-        tail_decay_scale: 1_000_000_000_000,
+        tail_decay_scale: 333_000_000_000,
         staker_cap: 5_000_000_000_000,
         max_oracle_staleness: 100,
     };
@@ -451,6 +487,63 @@ async fn create_paper_market(
     let created = extract_paper_market_created(&response.receipt)
         .ok_or("paper_market_created event missing")?;
     Ok((created.market.to_string(), created.paper_token.to_string()))
+}
+
+async fn create_paper_amm(
+    client: &IndexerHttp,
+    signer: &Signer,
+    paper_market: lightpool_sdk::ContractAddress,
+    paper_token: lightpool_sdk::ContractAddress,
+    quote_token: lightpool_sdk::ContractAddress,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let sender = signer.address();
+    let (token0, token1) = if paper_token < quote_token {
+        (paper_token, quote_token)
+    } else {
+        (quote_token, paper_token)
+    };
+    let create_action = ActionBuilder::create_amm_pool(AmmCreatePoolParams {
+        whitelist: None,
+        token0,
+        token1,
+        fee: 3_000,
+        tick_spacing: 10,
+        sqrt_price_x96: 1u128 << 96,
+    })?;
+    let create_tx = TransactionBuilder::new()
+        .sender(sender)
+        .expiration(u64::MAX)
+        .add_action(create_action)
+        .build_and_sign_only(signer)?;
+    let create_resp = client.submit(create_tx).await?;
+    if !create_resp.receipt.is_success() {
+        return Err(format!(
+            "create_amm_pool failed: {:?}",
+            create_resp.receipt.status
+        )
+        .into());
+    }
+    let amm_pool = extract_amm_pool_from_events(&create_resp.receipt)
+        .ok_or("pool_created event missing")?;
+
+    let set_action = ActionBuilder::set_paper_amm(
+        paper_market,
+        PaperSetAmmParams { amm_pool },
+    )?;
+    let set_tx = TransactionBuilder::new()
+        .sender(sender)
+        .expiration(u64::MAX)
+        .add_action(set_action)
+        .build_and_sign_only(signer)?;
+    let set_resp = client.submit(set_tx).await?;
+    if !set_resp.receipt.is_success() {
+        return Err(format!(
+            "set_paper_amm failed: {:?}",
+            set_resp.receipt.status
+        )
+        .into());
+    }
+    Ok(amm_pool.to_string())
 }
 
 async fn submit_actions(

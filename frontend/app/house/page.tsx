@@ -389,6 +389,7 @@ function HouseBody() {
         { label: "Side bucket", value: money(house.side_bucket) },
         { label: "Tracked LP", value: money(house.tracked_lp) },
         { label: "Tail HWM", value: money(house.tail_hwm), splitAfter: true },
+        { label: "Buyback acc", value: money(house.buyback_cash ?? "0") },
         { label: "Staker fee acc", value: money(house.staker_fee_acc) },
         { label: "Dev fee acc", value: money(house.dev_fee_acc) },
       ]

@@ -2037,7 +2037,7 @@ button {
   margin: 0;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   box-sizing: border-box;
 }
 
@@ -2111,18 +2111,18 @@ button {
 }
 
 .house-card .house-stats-list > div {
-  padding: 6px 0;
+  padding: 3px 0;
 }
 
 .house-card .house-stats-list > .house-stats-funds,
 .house-card .house-stats-list > .house-section-split {
-  padding-bottom: 10px;
-  margin-bottom: 6px;
+  padding-bottom: 6px;
+  margin-bottom: 3px;
   border-bottom: 1px solid var(--border);
 }
 
 .house-card h2 {
-  margin: 0 0 8px;
+  margin: 0 0 4px;
   flex: 0 0 auto;
   font-size: 13px;
   font-weight: 600;

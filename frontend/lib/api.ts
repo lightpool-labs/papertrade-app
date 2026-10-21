@@ -236,6 +236,8 @@ export type PaperHouse = {
   staker_fee_acc_raw: number;
   dev_fee_acc: string;
   dev_fee_acc_raw: number;
+  buyback_cash?: string;
+  buyback_cash_raw?: number;
   queue_nonempty: boolean;
   open_interest: string;
   open_interest_raw: number;
@@ -394,6 +396,8 @@ export type PaperStake = {
   pending_reward_raw: number;
   reward_pool: string;
   reward_pool_raw: number;
+  buyback_cash?: string;
+  buyback_cash_raw?: number;
   total_staked: string;
   total_staked_raw: number;
   stake_share_pct: string;

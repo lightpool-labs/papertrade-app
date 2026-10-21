@@ -1,5 +1,6 @@
 {
   "paper_market": "0x0c01000000000001",
+  "amm_pool": "0x0a00000000000001",
   "quote_decimals": 6,
   "liq_buffer_ppm": 500,
   "instruments": [
