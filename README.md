@@ -44,6 +44,19 @@ cd tests
 cargo run --release --bin hold-opens
 ```
 
+Admin seeds one long + one short (then keeps PAPER on liqd). When house
+`buyback_cash` has piled up and you want the AMM to vacuum PAPER into the
+furnace:
+
+```bash
+cd tests
+cargo run --release --bin buyback-amm
+```
+
+That adds PAPER/USDC liquidity on ticks `[-1000, 1000]`, then spends existing
+`buyback_cash`: USDC → PAPER → burn. Watch PAPER's USDC price tick up while the
+receipt prints `quote_spent` / `paper_burned`.
+
 Stop:
 
 ```bash
@@ -56,10 +69,3 @@ Status / clean runtime data (stop first):
 ./scripts/start-paper.sh status
 ./scripts/start-paper.sh clean
 ```
-
-## Song demo (Fireworks video)
-
-Record the Fireworks / liquidation-ash UI driven by an MP3: upload a song to
-the demo sidecar, then open `/trade/btc?demo=<session_id>` for a deterministic
-fake mark + liquidation timeline that erupts at the song climax. No chain, no
-wallet transactions. See [`demo/README.md`](./demo/README.md).
