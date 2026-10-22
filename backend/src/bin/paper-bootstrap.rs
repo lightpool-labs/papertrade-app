@@ -468,10 +468,12 @@ async fn create_paper_market(
         staker_share_ppm: 500_000,
         deadband_ppm: 20,
         liq_buffer_ppm: 500,
-        flat_threshold: 2_000_000_000_000,
+        // Faster local buyback soak: x=$1M, y=$2M (was $2M / $5M).
+        // S≈$0.111M so mint rate ≈1% of flat at y (ε=1%, H=y-x).
+        flat_threshold: 1_000_000_000_000,
         flat_rate_ppm: 100_000_000,
-        tail_decay_scale: 333_000_000_000,
-        staker_cap: 5_000_000_000_000,
+        tail_decay_scale: 111_111_111_111,
+        staker_cap: 2_000_000_000_000,
         max_oracle_staleness: 100,
     };
     let action = ActionBuilder::create_paper_market(params)?;

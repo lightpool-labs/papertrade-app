@@ -1,8 +1,10 @@
 // Copyright (c) LightPool Labs
-//! Fill then hold ~N open paper positions across many accounts.
+//! Fill then hold ~N open paper positions across worker accounts.
+//! Admin is separate: seeds one long + one short (1.2M margin each, high leverage);
+//! when those liquidate, PAPER stays in the admin wallet for `buyback-amm`.
 //! Optional take-profit: subscribe indexer oracle mark and close when ROE ≥ threshold.
 //! `paper.positions` keeps the local open count (opened +1, closed/liquidated −1).
-//! Liquidations stake minted paper for that worker immediately.
+//! Worker liquidations stake minted PAPER immediately.
 //! Indexer `open_positions()` replaces that count every `--reconcile-mins` (default 10).
 //! One task signs at `--rate`; a pool of `--senders` tasks submits and waits for receipts.
 //!
@@ -50,6 +52,14 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 /// Anvil / Hardhat account #0 — bootstrap USDC minter / holder.
 const DEFAULT_ADMIN_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+
+/// Admin buyback seed: one long + one short at this whole-USDC margin each.
+/// Sized so two liqds leave ~2.4M PAPER for AMM L≈4.5e13 on ticks [-1000,1000]
+/// (enough depth for a ~2M USDC buyback swap in one tx).
+const ADMIN_SEED_MARGIN_USDC: u64 = 1_200_000;
+/// Extra whole USDC left on admin after seed opens (for AMM add_liquidity).
+const ADMIN_BUYBACK_USDC_RESERVE: u64 = 2_500_000;
+const ADMIN_SEED_LEVERAGE: u64 = 1_000;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -662,12 +672,22 @@ async fn fund_workers(
     let admin_addr_s = admin_addr.to_string();
     let t0 = Instant::now();
 
+    // Workers get transfers; admin keeps seed opens (2×1.2M) + AMM USDC reserve.
     let n_fund = workers
         .iter()
         .filter(|w| w.address() != admin_addr)
         .count() as u64;
-    let need_raw = amount
+    let admin_keep_usdc = ADMIN_SEED_MARGIN_USDC
+        .saturating_mul(2)
+        .saturating_add(ADMIN_BUYBACK_USDC_RESERVE);
+    let admin_keep_raw = admin_keep_usdc
+        .checked_mul(TOKEN_SCALE)
+        .context("admin keep overflow")?;
+    let workers_raw = amount
         .checked_mul(n_fund)
+        .context("workers fund overflow")?;
+    let need_raw = workers_raw
+        .checked_add(admin_keep_raw)
         .context("total fund overflow")?;
     ensure_admin_lp_usdc(
         client,
@@ -747,6 +767,42 @@ async fn fund_workers(
         elapsed_ms = t0.elapsed().as_millis() as u64,
         "fund workers done (LP USDC only; open pulls margin from token balance)"
     );
+    Ok(())
+}
+
+async fn admin_seed_buyback_positions(
+    client: &IndexerHttp,
+    admin: &Signer,
+    paper_market: &str,
+    instrument: u32,
+) -> Result<()> {
+    let margin_raw = ADMIN_SEED_MARGIN_USDC
+        .checked_mul(TOKEN_SCALE)
+        .context("admin seed margin overflow")?;
+    for is_long in [true, false] {
+        let tx = sign_open(
+            admin,
+            paper_market,
+            instrument,
+            is_long,
+            margin_raw,
+            ADMIN_SEED_LEVERAGE,
+        )
+        .context("sign admin seed open")?;
+        let response = client.submit(tx).await.context("submit admin seed open")?;
+        if !response.receipt.is_success() {
+            bail!(
+                "admin seed open (is_long={is_long}) failed: {:?}",
+                response.receipt.status
+            );
+        }
+        tracing::info!(
+            is_long,
+            margin_usdc = ADMIN_SEED_MARGIN_USDC,
+            leverage = ADMIN_SEED_LEVERAGE,
+            "admin seed open for buyback PAPER (liqd keeps PAPER, no stake)"
+        );
+    }
     Ok(())
 }
 
@@ -1118,6 +1174,7 @@ fn position_id_from_ws(msg: &Value) -> Option<u64> {
 
 /// Count every open/close/liquidation on this market. Drop tracked rows on close/liqd.
 /// Queue one paper stake per worker account while a stake is already pending.
+/// Liquidations for `admin_addr` keep PAPER (no stake) for buyback-amm.
 fn spawn_positions_ws(
     ws_url: String,
     paper_market: String,
@@ -1126,6 +1183,7 @@ fn spawn_positions_ws(
     worker_by_addr: Arc<HashMap<String, usize>>,
     stake_tx: mpsc::Sender<StakeReq>,
     stake_pending: Arc<Mutex<HashSet<usize>>>,
+    admin_addr: String,
 ) {
     tokio::spawn(async move {
         let market_key = paper_market.trim().to_ascii_lowercase();
@@ -1185,17 +1243,23 @@ fn spawn_positions_ws(
                                 if kind != "liquidated" {
                                     continue;
                                 }
+                                let owner = value
+                                    .get("user_address")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .trim()
+                                    .to_ascii_lowercase();
+                                if !admin_addr.is_empty() && owner == admin_addr {
+                                    tracing::info!(
+                                        position,
+                                        %owner,
+                                        "admin liqd — keep PAPER for buyback-amm (no stake)"
+                                    );
+                                    continue;
+                                }
                                 let account_idx = tracked
                                     .map(|t| t.account_idx)
-                                    .or_else(|| {
-                                        let owner = value
-                                            .get("user_address")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .trim()
-                                            .to_ascii_lowercase();
-                                        worker_by_addr.get(&owner).copied()
-                                    });
+                                    .or_else(|| worker_by_addr.get(&owner).copied());
                                 let Some(account_idx) = account_idx else {
                                     continue;
                                 };
@@ -1384,7 +1448,7 @@ enum SignWork {
 
 async fn run_sign_loop(
     client: Arc<IndexerHttp>,
-    workers: Arc<Vec<Signer>>,
+    traders: Arc<Vec<Signer>>,
     paper_market: String,
     paper_token: String,
     args: &Args,
@@ -1504,7 +1568,7 @@ async fn run_sign_loop(
                         pending.lock().await.remove(&idx);
                     }
                 };
-                let Some(signer) = workers.get(req.account_idx) else {
+                let Some(signer) = traders.get(req.account_idx) else {
                     clear_pending(&stake_pending, req.account_idx).await;
                     continue;
                 };
@@ -1579,7 +1643,7 @@ async fn run_sign_loop(
                 continue;
             }
             SignWork::Close(req) => {
-                let Some(signer) = workers.get(req.account_idx) else {
+                let Some(signer) = traders.get(req.account_idx) else {
                     if let Some(pos) = book.lock().await.get_mut(&req.position) {
                         pos.closing = false;
                     }
@@ -1608,14 +1672,14 @@ async fn run_sign_loop(
             SignWork::Open => {}
         }
 
-        let draw = match draw_open(&mut rng, args, workers.len(), soak_start) {
+        let draw = match draw_open(&mut rng, args, traders.len(), soak_start) {
             Ok(draw) => draw,
             Err(err) => {
                 tracing::warn!(error = %err, "draw open failed");
                 continue;
             }
         };
-        let signer = &workers[draw.account_idx];
+        let signer = &traders[draw.account_idx];
         counts.lock().await.on_submit_open();
         let tx = match sign_open(
             signer,
@@ -1733,6 +1797,8 @@ async fn main() -> Result<()> {
 
     let client = Arc::new(IndexerHttp::new(&args.indexer_url)?);
     let admin = load_signer(&args.admin_key)?;
+    let admin_addr = admin.address().to_string().to_ascii_lowercase();
+    // Workers only in the soak loop; admin seeds two positions separately.
     let mut workers_vec = Vec::with_capacity(args.accounts as usize);
     for i in 0..args.accounts {
         workers_vec.push(worker_signer(i)?);
@@ -1811,6 +1877,10 @@ async fn main() -> Result<()> {
         .context("fund workers")?;
     }
 
+    admin_seed_buyback_positions(&client, &admin, &paper_market, args.instrument)
+        .await
+        .context("admin seed long+short for buyback PAPER")?;
+
     let open = client.open_positions(&paper_market).await?;
     let counts = Arc::new(Mutex::new(CountState::seed(open)));
     tracing::info!(open, target = args.target, "seeded open count from indexer");
@@ -1825,6 +1895,7 @@ async fn main() -> Result<()> {
         Arc::clone(&worker_by_addr),
         stake_tx,
         Arc::clone(&stake_pending),
+        admin_addr,
     );
     spawn_reconcile(
         Arc::clone(&client),
